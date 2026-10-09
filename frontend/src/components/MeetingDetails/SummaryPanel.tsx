@@ -362,6 +362,7 @@ export function SummaryPanel({
           aiSummary={aiSummary}
           transcripts={transcripts}
           generating={isSummaryLoading}
+          meetingId={meeting.id}
         />
       </div>
       </div>
