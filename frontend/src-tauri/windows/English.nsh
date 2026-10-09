@@ -28,7 +28,7 @@ LangString webview2InstallSuccess ${LANG_ENGLISH} "WebView2 installed"
 LangString deleteAppData ${LANG_ENGLISH} "Also delete meetings, models, and local data"
 
 ; --- welcome page ---
-LangString tkEyebrow ${LANG_ENGLISH} "TALKKEEPER  /  LOCAL AI MEETINGS"
+LangString tkEyebrow ${LANG_ENGLISH} "KONSPEKT  /  LOCAL AI MEETINGS"
 LangString tkWelcomeTitle ${LANG_ENGLISH} "Meetings stay yours."
 LangString tkWelcomeText ${LANG_ENGLISH} "Recording, transcription, speaker labels and summaries on your own PC."
 LangString tkBackendsBox ${LANG_ENGLISH} "  ONE INSTALLER, THREE BACKENDS  "

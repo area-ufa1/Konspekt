@@ -359,7 +359,7 @@ std::wstring DefaultInstallDirectory() {
   wchar_t registered_path[32768];
   DWORD registered_size = sizeof(registered_path);
   if (RegGetValueW(HKEY_CURRENT_USER,
-                   L"Software\\meetily\\Konspekt", nullptr,
+                   L"Software\\konspekt\\Konspekt", nullptr,
                    RRF_RT_REG_SZ, nullptr, registered_path, &registered_size) == ERROR_SUCCESS &&
       registered_path[0] != L'\0') {
     return registered_path;

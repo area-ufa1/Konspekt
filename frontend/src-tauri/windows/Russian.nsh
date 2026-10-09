@@ -33,7 +33,7 @@ LangString webview2InstallSuccess ${LANG_RUSSIAN} "WebView2 установлен
 LangString deleteAppData ${LANG_RUSSIAN} "Удалить также встречи, модели и локальные данные"
 
 ; --- страница приветствия ---
-LangString tkEyebrow ${LANG_RUSSIAN} "TALKKEEPER  /  ЛОКАЛЬНЫЕ ВСТРЕЧИ"
+LangString tkEyebrow ${LANG_RUSSIAN} "KONSPEKT  /  ЛОКАЛЬНЫЕ ВСТРЕЧИ"
 LangString tkWelcomeTitle ${LANG_RUSSIAN} "Встречи остаются вашими."
 LangString tkWelcomeText ${LANG_RUSSIAN} "Запись, расшифровка, разметка говорящих и саммари — на вашем компьютере."
 LangString tkBackendsBox ${LANG_RUSSIAN} "  ОДИН УСТАНОВЩИК, ТРИ ДВИЖКА  "
