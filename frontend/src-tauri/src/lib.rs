@@ -448,20 +448,21 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(security::commands::SecurityState::new())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
-        .setup(|_app| {
+        .manage(claude_session::manager::LiveAssistant::default())
+        .setup(|app| {
             if let Err(error) = crash_report::start_session() {
                 log::error!("Failed to initialize crash reporting: {error}");
             }
             log::info!("Application setup complete");
 
             // Initialize system tray
-            if let Err(e) = tray::create_tray(_app.handle()) {
+            if let Err(e) = tray::create_tray(app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
 
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
-            let app_for_notif = _app.handle().clone();
+            let app_for_notif = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let notif_state = app_for_notif.state::<NotificationManagerState<tauri::Wry>>();
                 match notifications::commands::initialize_notification_manager(app_for_notif.clone()).await {
@@ -488,23 +489,23 @@ pub fn run() {
             // Read the keystore before anything can ask for the key, and start
             // watching for the archive being left open unattended.
             crate::network_policy::load();
-            crate::security::commands::initialize(&_app.handle());
+            crate::security::commands::initialize(&app.handle());
 
             // Meeting detection: load persisted settings and start the monitor
             // if the user enabled it (default off).
-            crate::meeting_detection::initialize(&_app.handle());
+            crate::meeting_detection::initialize(&app.handle());
 
             // Free Whisper/Parakeet VRAM a couple minutes after last STT use.
             audio::common::start_stt_idle_unloader();
 
             // Hydrate mic gain (and other recording prefs) into runtime atomics.
-            let app_for_prefs = _app.handle().clone();
+            let app_for_prefs = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = audio::recording_preferences::load_recording_preferences(&app_for_prefs).await;
             });
 
             // Set models directory (install-local, portable storage location)
-            whisper_engine::commands::set_models_directory(&_app.handle());
+            whisper_engine::commands::set_models_directory(&app.handle());
 
             // Initialize Whisper engine on startup
             tauri::async_runtime::spawn(async {
@@ -514,7 +515,7 @@ pub fn run() {
             });
 
             // Set Parakeet models directory
-            parakeet_engine::commands::set_models_directory(&_app.handle());
+            parakeet_engine::commands::set_models_directory(&app.handle());
 
             // Initialize Parakeet engine on startup
             tauri::async_runtime::spawn(async {
@@ -524,10 +525,10 @@ pub fn run() {
             });
 
             // Set GigaAM models directory (the engine itself loads on demand)
-            gigaam_engine::commands::set_models_directory(&_app.handle());
+            gigaam_engine::commands::set_models_directory(&app.handle());
 
             // Initialize ModelManager for summary engine (async, non-blocking)
-            let app_handle_for_model_manager = _app.handle().clone();
+            let app_handle_for_model_manager = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 match summary::summary_engine::commands::init_model_manager_at_startup(&app_handle_for_model_manager).await {
                     Ok(_) => log::info!("ModelManager initialized successfully at startup"),
@@ -550,13 +551,34 @@ pub fn run() {
 
             // Initialize database (handles first launch detection and conditional setup)
             tauri::async_runtime::block_on(async {
-                database::setup::initialize_database_on_startup(&_app.handle()).await
+                database::setup::initialize_database_on_startup(&app.handle()).await
             })
             .expect("Failed to initialize database");
 
+            // Ассистент записи: диалог с Claude Code живёт ровно столько, сколько запись.
+            {
+                use tauri::Listener;
+                let handle = app.handle().clone();
+                app.listen("recording-started", move |_event| {
+                    let handle = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let Some(state) = handle.try_state::<crate::state::AppState>() else { return };
+                        let setup = crate::claude_session::commands::setup_for_recording(state.db_manager.pool()).await;
+                        handle.state::<crate::claude_session::manager::LiveAssistant>().start(setup).await;
+                    });
+                });
+                let handle = app.handle().clone();
+                app.listen("recording-stopped", move |_event| {
+                    let handle = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        handle.state::<crate::claude_session::manager::LiveAssistant>().stop().await;
+                    });
+                });
+            }
+
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
-            if let Ok(resource_path) = _app.handle().path().resource_dir() {
+            if let Ok(resource_path) = app.handle().path().resource_dir() {
                 let templates_dir = resource_path.join("templates");
                 log::info!("Setting bundled templates directory to: {:?}", templates_dir);
                 summary::templates::set_bundled_templates_dir(templates_dir);
@@ -599,6 +621,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            claude_session::commands::assistant_ask,
+            claude_session::commands::assistant_live_turns,
+            claude_session::commands::assistant_status,
             security::commands::security_status,
             network_policy::get_local_only_mode,
             network_policy::set_local_only_mode,

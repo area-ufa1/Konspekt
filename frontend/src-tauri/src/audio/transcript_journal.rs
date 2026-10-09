@@ -56,6 +56,8 @@ enum Record {
     NoteRemoved { id: String },
     /// The order of the notes, written when one was started between others.
     NoteOrder { ids: Vec<String> },
+    /// A question to the recording's assistant with its answer.
+    AssistantTurn(crate::claude_session::AssistantTurn),
 }
 
 /// The journal of the recording now running, if any.
@@ -67,6 +69,8 @@ struct Journal {
     /// The notes as they stand, so the window can show them again after it
     /// was closed or reloaded mid-recording.
     notes: Vec<Note>,
+    /// The assistant's turns so far, for the same reason.
+    turns: Vec<crate::claude_session::AssistantTurn>,
 }
 
 impl Journal {
@@ -84,6 +88,16 @@ fn current() -> std::sync::MutexGuard<'static, Option<Journal>> {
     CURRENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Тесты, которые открывают, закрывают или читают текущий журнал, держат этот
+/// замок всё время теста: журнал записи один на процесс.
+#[cfg(test)]
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Starts the journal for a recording that has just got its folder.
 pub fn begin(folder: &Path, title: &str, started_at: &str) {
     let path = folder.join(JOURNAL_FILE);
@@ -93,6 +107,7 @@ pub fn begin(folder: &Path, title: &str, started_at: &str) {
             folder: folder.to_path_buf(),
             file,
             notes: Vec::new(),
+            turns: Vec::new(),
         },
         Err(error) => {
             warn!("Could not open the transcript journal: {error}");
@@ -178,6 +193,23 @@ pub fn current_notes() -> Vec<Note> {
         .as_ref()
         .map(|journal| journal.notes.clone())
         .unwrap_or_default()
+}
+
+/// Ход ассистента записи, что идёт сейчас. Ошибку видит вызывающий: ответ
+/// показан, но не сохранится.
+pub fn add_turn(turn: &crate::claude_session::AssistantTurn) -> Result<(), String> {
+    let mut guard = current();
+    let journal = guard.as_mut().ok_or("Запись не идёт")?;
+    journal
+        .append(&Record::AssistantTurn(turn.clone()))
+        .map_err(|error| format!("Не удалось сохранить ответ ассистента: {error}"))?;
+    journal.turns.push(turn.clone());
+    Ok(())
+}
+
+/// Ходы ассистента текущей записи — чтобы окно показало их после перезагрузки.
+pub fn current_turns() -> Vec<crate::claude_session::AssistantTurn> {
+    current().as_ref().map(|journal| journal.turns.clone()).unwrap_or_default()
 }
 
 /// The notes the journal in `folder` holds, for the meeting being saved from
@@ -312,6 +344,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
                 // Stable: a note the list does not name keeps its place after the rest.
                 notes.sort_by_key(|note| ids.iter().position(|id| *id == note.id).unwrap_or(usize::MAX));
             }
+            Some(Record::AssistantTurn(_)) => {}
             None => skipped += 1,
         }
     }
@@ -511,9 +544,10 @@ mod tests {
         }
     }
 
-    // One test, because the running journal is process-wide.
+    // Holds test_lock(): the running journal is process-wide.
     #[test]
     fn a_journal_reads_back_with_updates_applied_and_torn_lines_skipped() {
+        let _journal = test_lock();
         let root = tempfile::tempdir().unwrap();
         let folder = root.path().join("meeting");
         std::fs::create_dir(&folder).unwrap();
