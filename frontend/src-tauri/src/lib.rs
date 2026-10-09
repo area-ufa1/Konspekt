@@ -34,6 +34,7 @@ macro_rules! perf_trace {
 
 // Declare audio module
 pub mod api;
+pub mod assistant_turns;
 pub mod audio;
 pub mod claude_cli;
 pub mod claude_session;
@@ -629,6 +630,7 @@ pub fn run() {
             claude_session::commands::assistant_ask,
             claude_session::commands::assistant_live_turns,
             claude_session::commands::assistant_status,
+            assistant_turns::commands::api_get_assistant_turns,
             security::commands::security_status,
             network_policy::get_local_only_mode,
             network_policy::set_local_only_mode,

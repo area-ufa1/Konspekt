@@ -318,6 +318,8 @@ pub async fn restore_recording_without_meeting<R: tauri::Runtime>(
         &[],
         // Notes written while it was recorded come back with the sound.
         &super::transcript_journal::notes_in(&folder),
+        // Вопросы ассистенту во время записи — тоже.
+        &super::transcript_journal::turns_in(&folder),
         Some(folder_text.clone()),
         started_at,
     )

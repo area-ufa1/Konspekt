@@ -150,6 +150,20 @@ fn columns() -> Vec<Column> {
             kind: Kind::Sealed,
         },
         Column {
+            table: "assistant_turns",
+            key: "id",
+            name: "question",
+            field: fields::ASSISTANT_QUESTION,
+            kind: Kind::Sealed,
+        },
+        Column {
+            table: "assistant_turns",
+            key: "id",
+            name: "answer",
+            field: fields::ASSISTANT_ANSWER,
+            kind: Kind::Sealed,
+        },
+        Column {
             table: "privacy_settings",
             key: "id",
             name: "hidden_terms",
@@ -519,6 +533,10 @@ mod tests {
              CREATE TABLE privacy_settings (id TEXT PRIMARY KEY, \
                  anonymize_cloud INTEGER NOT NULL DEFAULT 1, hidden_terms TEXT); \
              CREATE TABLE meeting_notes (meeting_id TEXT PRIMARY KEY, notes_json TEXT); \
+             CREATE TABLE assistant_turns (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
+                 asked_at_sec REAL NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL, \
+                 model TEXT NOT NULL, created_at TEXT NOT NULL, \
+                 FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE); \
              CREATE TABLE meeting_whisper_vocabulary (meeting_id TEXT PRIMARY KEY, \
                  vocabulary TEXT NOT NULL); \
              CREATE TABLE settings (id TEXT PRIMARY KEY, openaiApiKey TEXT, \

@@ -98,6 +98,7 @@ async fn with_schema(pool: SqlitePool) -> SqlitePool {
         include_str!("../migrations/20260822000000_add_whisper_vocabulary.sql"),
         include_str!("../migrations/20260905000000_add_external_stt_config.sql"),
         include_str!("../migrations/20261010000000_add_claude_cli_settings.sql"),
+        include_str!("../migrations/20261010010000_add_assistant_turns.sql"),
     ] {
         sqlx::raw_sql(migration).execute(&pool).await.unwrap();
     }
@@ -156,6 +157,7 @@ async fn the_words_are_not_in_the_database_file() {
             segment("s2", "давайте сверим числа", "You", 3.0),
         ],
         &[],
+        &[],
         None,
         None,
     )
@@ -205,6 +207,54 @@ async fn the_words_are_not_in_the_database_file() {
 }
 
 #[tokio::test]
+async fn assistant_turns_are_sealed_and_go_with_the_meeting() {
+    let pool = archive().await;
+    let turn = app_lib::claude_session::AssistantTurn {
+        id: "turn-1".to_string(),
+        asked_at_sec: 42.0,
+        question: "когда сдавать курсовую".to_string(),
+        answer: "до пятницы, сказал препод".to_string(),
+        model: "haiku".to_string(),
+        created_at: "2026-10-10T09:00:42Z".to_string(),
+    };
+    let meeting_id = TranscriptsRepository::save_transcript(
+        &pool,
+        "Пара",
+        &[],
+        &[],
+        std::slice::from_ref(&turn),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let stored: Vec<(String, String)> =
+        sqlx::query_as("SELECT question, answer FROM assistant_turns")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored.len(), 1);
+    for word in ["курсовую", "пятницы", "препод"] {
+        assert!(
+            !stored[0].0.contains(word) && !stored[0].1.contains(word),
+            "the word {word:?} is stored in the clear"
+        );
+    }
+    assert_eq!(
+        app_lib::assistant_turns::load(&pool, &meeting_id).await.unwrap(),
+        vec![turn]
+    );
+
+    assert!(MeetingsRepository::delete_meeting(&pool, &meeting_id).await.unwrap());
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM assistant_turns")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+#[tokio::test]
 async fn search_still_finds_a_sealed_word() {
     // The scan decrypts as it goes; if it did not, this would find nothing and
     // the owner would conclude the archive had lost the recording.
@@ -213,6 +263,7 @@ async fn search_still_finds_a_sealed_word() {
         &pool,
         "Встреча в четверг",
         &[segment("s1", "отчёт будет в пятницу", "Анна", 0.0)],
+        &[],
         &[],
         None,
         None,
@@ -254,6 +305,7 @@ async fn a_person_profile_still_joins_to_the_lines_they_said() {
             segment("s1", "первая реплика", "Анна", 0.0),
             segment("s2", "вторая реплика", "Анна", 3.0),
         ],
+        &[],
         &[],
         None,
         None,
@@ -333,6 +385,7 @@ async fn a_role_assigned_to_a_named_speaker_is_found_again() {
             segment("s2", "вторая реплика", "Анна", 3.0),
         ],
         &[],
+        &[],
         None,
         None,
     )
@@ -377,6 +430,7 @@ async fn a_correction_is_sealed_and_a_removal_leaves_no_words() {
             segment("s1", "первая реплика", "Анна", 0.0),
             segment("s2", "вторая реплика", "You", 3.0),
         ],
+        &[],
         &[],
         None,
         None,

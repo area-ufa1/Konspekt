@@ -1024,11 +1024,17 @@ pub async fn api_save_transcript<R: Runtime>(
         .as_deref()
         .map(|folder| crate::audio::transcript_journal::notes_in(std::path::Path::new(folder)))
         .unwrap_or_default();
+    // Вопросы ассистенту во время записи — тоже из журнала.
+    let turns = folder_path
+        .as_deref()
+        .map(|folder| crate::audio::transcript_journal::turns_in(std::path::Path::new(folder)))
+        .unwrap_or_default();
     match TranscriptsRepository::save_transcript(
         pool,
         &meeting_title,
         &transcripts_to_save,
         &notes,
+        &turns,
         folder_path,
         recording_started_at,
     )

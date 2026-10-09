@@ -224,6 +224,17 @@ pub fn notes_in(folder: &Path) -> Vec<Note> {
     }
 }
 
+/// Ходы ассистента из журнала в `folder` — для встречи, которая сохраняется.
+pub fn turns_in(folder: &Path) -> Vec<crate::claude_session::AssistantTurn> {
+    match read(folder) {
+        Ok(journal) => journal.map(|journal| journal.turns).unwrap_or_default(),
+        Err(error) => {
+            warn!("Could not read the assistant turns of a recording: {error}");
+            Vec::new()
+        }
+    }
+}
+
 /// Closes the running journal. The file stays until the meeting is saved.
 pub fn end() {
     *current() = None;
@@ -264,6 +275,9 @@ pub struct Unsaved {
     /// The owner's notes, kept with the meeting when it is restored.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    /// Вопросы ассистенту во время записи — сохраняются со встречей.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<crate::claude_session::AssistantTurn>,
     /// Set when there is no transcript to restore, only audio: restoring then
     /// means recognising the recording again.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -308,6 +322,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
     let mut started_at = String::new();
     let mut segments: Vec<TranscriptSegment> = Vec::new();
     let mut notes: Vec<Note> = Vec::new();
+    let mut turns = Vec::new();
     let mut skipped = 0usize;
 
     for line in BufReader::new(file).lines() {
@@ -344,7 +359,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
                 // Stable: a note the list does not name keeps its place after the rest.
                 notes.sort_by_key(|note| ids.iter().position(|id| *id == note.id).unwrap_or(usize::MAX));
             }
-            Some(Record::AssistantTurn(_)) => {}
+            Some(Record::AssistantTurn(turn)) => turns.push(turn),
             None => skipped += 1,
         }
     }
@@ -360,6 +375,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
         last_updated,
         segments,
         notes,
+        turns,
         audio_only: None,
     }))
 }
@@ -486,6 +502,7 @@ pub async fn list_unsaved_recordings<R: tauri::Runtime>(
                     last_updated: last_written(&folder),
                     segments: Vec::new(),
                     notes,
+                    turns: Vec::new(),
                     audio_only: Some(audio),
                 });
             }
@@ -598,6 +615,18 @@ mod tests {
         remove(&folder);
         assert!(read(&folder).unwrap().is_none());
         assert!(find(&[root.path().to_path_buf()]).is_empty());
+    }
+
+    #[test]
+    fn assistant_turns_survive_in_the_journal() {
+        let _journal = test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        begin(dir.path(), "пара", "2026-10-10T09:00:00Z");
+        let turn = crate::claude_session::AssistantTurn { id: "t1".into(), asked_at_sec: 12.0, question: "q".into(), answer: "a".into(), model: "haiku".into(), created_at: "2026-10-10T09:00:12Z".into() };
+        add_turn(&turn).unwrap();
+        assert_eq!(current_turns(), vec![turn.clone()]);
+        end();
+        assert_eq!(turns_in(dir.path()), vec![turn]);
     }
 
     #[test]
