@@ -20,6 +20,7 @@ jobs:
       # this exact one is never started.
       LLVM_SHA256: "94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f"
       PNPM_VERSION: "11.25.0"
+      CARGO_TERM_COLOR: never
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,6 +35,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          cache-on-failure: true
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         run: |
           $installer = "$env:RUNNER_TEMP\llvm.exe"

@@ -21,6 +21,7 @@ jobs:
       # hashed after download; the installer is pinned.
       LLVM_SHA256: "94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f"
       PNPM_VERSION: "11.25.0"
+      CARGO_TERM_COLOR: never
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,4 +79,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: target/release/bundle/nsis/*-setup.exe
+          fail_on_unmatched_files: true
           prerelease: ${{ contains(github.ref_name, '-') }}
