@@ -13,9 +13,13 @@ export function AssistantTurnsSection({ meetingId }: { meetingId: string }) {
 
   useEffect(() => {
     let alive = true;
+    setTurns(null);
     invoke<AssistantTurn[]>('api_get_assistant_turns', { meetingId })
       .then((loaded) => { if (alive) setTurns(loaded); })
-      .catch(() => { if (alive) setTurns([]); });
+      .catch((e) => {
+        console.warn("api_get_assistant_turns failed:", e instanceof Error ? e.message : String(e));
+        if (alive) setTurns([]);
+      });
     return () => { alive = false; };
   }, [meetingId]);
 
