@@ -18,3 +18,6 @@ frontend/src-tauri/migrations/20260926000000_add_privacy_local_names.sql text eo
 # rewrites it whenever the bytes differ, so a CRLF checkout shows up as
 # modified after each build.
 frontend/src-tauri/Cargo.toml text eol=lf
+
+# cmd misparses LF-only batch files.
+scripts/*.cmd text eol=crlf
