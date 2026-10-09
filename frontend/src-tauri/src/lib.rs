@@ -36,6 +36,7 @@ macro_rules! perf_trace {
 pub mod api;
 pub mod audio;
 pub mod claude_cli;
+pub mod claude_session;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
