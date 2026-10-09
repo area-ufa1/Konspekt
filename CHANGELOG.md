@@ -1,10 +1,14 @@
 # Changelog
 
-## Konspekt 0.1.0 — не выпущено
+## Konspekt 0.1.0 — 10.10.2026
 
 Форк Talkkeeper (leyvanah/Talkkeeper, `main` @ 7f1b24d), MIT.
 Отдельное приложение: идентификатор `ru.konspekt.app`, бинарник `konspekt.exe`,
 записи в `Music\konspekt-recordings`, данные в папке установки или `%APPDATA%\Konspekt`.
+
+- Claude Code (подписка) для выжимки.
+- Вкладка «Ассистент» во время записи с постоянным диалогом.
+- Вопросы ассистенту сохраняются со встречей.
 
 ## 0.2.12 - 2026-08-30
 
