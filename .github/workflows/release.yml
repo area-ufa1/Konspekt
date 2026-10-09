@@ -1,0 +1,81 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # `next build` reports usage to Vercel unless told not to.
+      NEXT_TELEMETRY_DISABLED: "1"
+      # bindgen 0.69 (whisper-rs-sys, llama-cpp-sys-2) misreads headers from
+      # LLVM 19 and later; 18.1.8 is the version the project builds with.
+      LLVM_VERSION: "18.1.8"
+      # LLVM-18.1.8-win64.exe: as listed in winget-pkgs (LLVM.LLVM 18.1.8) and
+      # hashed after download; the installer is pinned.
+      LLVM_SHA256: "94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f"
+      PNPM_VERSION: "11.25.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --global "pnpm@$env:PNPM_VERSION"
+      - run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        run: |
+          $installer = "$env:RUNNER_TEMP\llvm.exe"
+          Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe" -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:LLVM_SHA256) { throw "LLVM installer SHA-256 mismatch: expected $env:LLVM_SHA256, got $actual" }
+          Start-Process $installer -ArgumentList '/S', '/D=C:\LLVM18' -Wait
+          # Wins over the repository's .cargo/config.toml, which points at the
+          # default install location.
+          "LIBCLANG_PATH=C:\LLVM18\bin" >> $env:GITHUB_ENV
+      - name: llama-helper (CPU)
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          rem The Visual Studio generator does not build the nested vulkan-shaders-gen; Ninja comes with VS.
+          set "PATH=%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
+          set "CMAKE_GENERATOR=Ninja"
+          rem From inside llama-helper\: its .cargo\config.toml links the C runtime statically.
+          pushd llama-helper || exit /b 1
+          cargo build --release --target-dir ..\target || exit /b 1
+          popd
+          if not exist frontend\src-tauri\binaries mkdir frontend\src-tauri\binaries
+          copy /y target\release\llama-helper.exe frontend\src-tauri\binaries\llama-helper-x86_64-pc-windows-msvc.exe || exit /b 1
+          copy /y target\release\llama-helper.exe frontend\src-tauri\binaries\llama-helper-cpu-x86_64-pc-windows-msvc.exe || exit /b 1
+      # Installed only where it is missing (see windows/installer-hooks.nsh).
+      # Microsoft's own signed redistributable, taken from Microsoft and checked.
+      - name: Fetch the Visual C++ runtime installer
+        run: |
+          $target = "frontend\src-tauri\runtime-deps\vc_redist.x64.exe"
+          # Git-ignored, so a fresh checkout does not have it yet.
+          New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+          Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $target
+          $signature = Get-AuthenticodeSignature $target
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "vc_redist.x64.exe is not validly signed by Microsoft: $($signature.Status)"
+          }
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Build installer
+        working-directory: frontend
+        run: pnpm tauri build --bundles nsis
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/bundle/nsis/*-setup.exe
+          prerelease: ${{ contains(github.ref_name, '-') }}
