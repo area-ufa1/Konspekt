@@ -23,13 +23,13 @@ const Logo = React.forwardRef<HTMLButtonElement, LogoProps>(({ isCollapsed }, re
       ) : (
         <DialogTrigger asChild>
           <span className="mb-2 block cursor-pointer whitespace-nowrap text-center text-xl font-bold tracking-tight text-blue-500 transition-opacity hover:opacity-80">
-            Talkkeeper
+            Konspekt
           </span>
         </DialogTrigger>
       )}
       <DialogContent>
         <VisuallyHidden>
-          <DialogTitle>{t('aboutTalkkeeper')}</DialogTitle>
+          <DialogTitle>{t('aboutApp')}</DialogTitle>
         </VisuallyHidden>
         <About />
       </DialogContent>

@@ -135,7 +135,7 @@ void DrawChrome(HDC dc) {
   RECT client{0, 0, kWindowWidth, kWindowHeight};
   Fill(dc, client, 0x0d1117);
 
-  Text(dc, L"Talkkeeper", {34, 3, 338, 45}, g_brand_font, 0x4b88f7);
+  Text(dc, L"Konspekt", {34, 3, 338, 45}, g_brand_font, 0x4b88f7);
   Text(dc, L"Actually Free Fork made by Tyler Buza  |  buza.dev",
        {390, 486, 736, 512}, g_small_font, 0x657a98,
        DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
@@ -189,7 +189,7 @@ void DrawWelcome(HDC dc) {
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
   RoundedFill(dc, InstallRect(), 12, 0x4b88f7);
-  Text(dc, L"Install Talkkeeper", InstallRect(), g_heading_font, 0xffffff,
+  Text(dc, L"Install Konspekt", InstallRect(), g_heading_font, 0xffffff,
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);
   Text(dc, L"Includes CPU, Vulkan, CUDA, and local speaker-labeling resources.",
        {72, 454, 688, 482}, g_small_font, 0x7890b2, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -209,7 +209,7 @@ void DrawProgress(HDC dc) {
   } else if (milestone < 72) {
     status = L"Unpacking bundled application and model files";
   } else if (milestone < 78) {
-    status = L"Registering Talkkeeper for this Windows user";
+    status = L"Registering Konspekt for this Windows user";
   } else if (milestone < 80) {
     status = L"Creating app shortcuts";
   } else if (milestone < 85) {
@@ -223,7 +223,7 @@ void DrawProgress(HDC dc) {
   } else {
     status = L"Finishing setup";
   }
-  Text(dc, extracting ? L"Preparing Talkkeeper" : L"Installing Talkkeeper",
+  Text(dc, extracting ? L"Preparing Konspekt" : L"Installing Konspekt",
        {72, 100, 688, 148}, g_title_font, 0xf2f6fc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
   Text(dc, status,
        {72, 149, 688, 180}, g_body_font, 0xa9bed9, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -317,7 +317,7 @@ void DrawComplete(HDC dc) {
     cuda_notice = g_cuda_notice;
   }
 
-  Text(dc, L"Talkkeeper is ready.", {72, 182, 688, 232}, g_title_font, 0xf2f6fc,
+  Text(dc, L"Konspekt is ready.", {72, 182, 688, 232}, g_title_font, 0xf2f6fc,
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);
   Text(dc, L"Launch it to finish the in-app welcome and audio check.", {72, 232, 688, 266},
        g_body_font, 0xa9bed9, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -341,7 +341,7 @@ void DrawComplete(HDC dc) {
   }
 
   RoundedFill(dc, LaunchRect(), 12, 0x4b88f7);
-  Text(dc, L"Launch Talkkeeper", LaunchRect(), g_heading_font, 0xffffff,
+  Text(dc, L"Launch Konspekt", LaunchRect(), g_heading_font, 0xffffff,
        DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 }
 
@@ -359,7 +359,7 @@ std::wstring DefaultInstallDirectory() {
   wchar_t registered_path[32768];
   DWORD registered_size = sizeof(registered_path);
   if (RegGetValueW(HKEY_CURRENT_USER,
-                   L"Software\\meetily\\Talkkeeper", nullptr,
+                   L"Software\\meetily\\Konspekt", nullptr,
                    RRF_RT_REG_SZ, nullptr, registered_path, &registered_size) == ERROR_SUCCESS &&
       registered_path[0] != L'\0') {
     return registered_path;
@@ -369,9 +369,9 @@ std::wstring DefaultInstallDirectory() {
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local_app_data))) {
     std::filesystem::path path(local_app_data);
     CoTaskMemFree(local_app_data);
-    return (path / L"Talkkeeper").wstring();
+    return (path / L"Konspekt").wstring();
   }
-  return L"C:\\Talkkeeper";
+  return L"C:\\Konspekt";
 }
 
 std::wstring ChooseDirectory(HWND owner) {
@@ -383,7 +383,7 @@ std::wstring ChooseDirectory(HWND owner) {
   DWORD options = 0;
   dialog->GetOptions(&options);
   dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-  dialog->SetTitle(L"Choose where to install Talkkeeper");
+  dialog->SetTitle(L"Choose where to install Konspekt");
   std::wstring result;
   if (SUCCEEDED(dialog->Show(owner))) {
     IShellItem* item = nullptr;
@@ -874,7 +874,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
   int x = work_area.left + ((work_area.right - work_area.left) - kWindowWidth) / 2;
   int y = work_area.top + ((work_area.bottom - work_area.top) - kWindowHeight) / 2;
   g_window = CreateWindowExW(WS_EX_APPWINDOW, window_class.lpszClassName,
-                             L"Talkkeeper Setup", WS_POPUP,
+                             L"Konspekt Setup", WS_POPUP,
                              x, y, kWindowWidth, kWindowHeight, nullptr, nullptr, instance, nullptr);
   if (!g_window) return 1;
 

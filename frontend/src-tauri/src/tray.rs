@@ -28,7 +28,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         // the menu and never the app. Reserve left-click for "open the window"
         // and leave the menu on right-click, which is what people expect.
         .show_menu_on_left_click(false)
-        .tooltip("Talkkeeper")
+        .tooltip("Konspekt")
         .icon(app.default_window_icon().unwrap().clone())
         .on_menu_event(|app, event| handle_menu_event(app, event.id.as_ref()))
         .on_tray_icon_event(|tray, event| {
@@ -250,12 +250,12 @@ fn show_state_in_icon<R: Runtime>(app: &AppHandle<R>, state: &RecordingState) {
         return;
     };
     let (icon, tooltip) = match state {
-        RecordingState::Stopped => (base.clone().to_owned(), "Talkkeeper"),
+        RecordingState::Stopped => (base.clone().to_owned(), "Konspekt"),
         RecordingState::Paused | RecordingState::Pausing => {
-            (icon_with_dot(base, [245, 158, 11]), "Talkkeeper — запись на паузе")
+            (icon_with_dot(base, [245, 158, 11]), "Konspekt — запись на паузе")
         }
-        RecordingState::Stopping => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — запись завершается"),
-        _ => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — идёт запись"),
+        RecordingState::Stopping => (icon_with_dot(base, [239, 68, 68]), "Konspekt — запись завершается"),
+        _ => (icon_with_dot(base, [239, 68, 68]), "Konspekt — идёт запись"),
     };
     if let Err(error) = tray.set_icon(Some(icon)) {
         log::warn!("Tray: could not show the recording state in the icon: {}", error);

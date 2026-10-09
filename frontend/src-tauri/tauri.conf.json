@@ -1,8 +1,9 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-    "productName": "Talkkeeper",
-    "version": "0.2.34",
-    "identifier": "com.meetily.ai",
+    "productName": "Konspekt",
+    "version": "0.1.0",
+    "identifier": "ru.konspekt.app",
+    "mainBinaryName": "konspekt",
     "build": {
         "frontendDist": "../out",
         "devUrl": "http://localhost:3118",
@@ -12,7 +13,7 @@
     "app": {
         "windows": [
             {
-                "title": "Talkkeeper",
+                "title": "Konspekt",
                 "width": 1100,
                 "height": 700,
                 "minWidth": 960,

@@ -18,7 +18,7 @@ export async function chooseCrashReportDestination(
   report: PendingCrashReport,
 ): Promise<string | null> {
   const destination = await save({
-    defaultPath: `Talkkeeper-crash-${report.reportId.slice(0, 8)}.zip`,
+    defaultPath: `Konspekt-crash-${report.reportId.slice(0, 8)}.zip`,
     filters: [{ name: 'ZIP archive', extensions: ['zip'] }],
   })
   if (!destination) return null

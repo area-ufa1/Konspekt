@@ -6,9 +6,9 @@
 //!
 //! | OS      | Default location                                  |
 //! |---------|---------------------------------------------------|
-//! | Windows | `%USERPROFILE%\Music\meetily-recordings`           |
-//! | macOS   | `~/Movies/meetily-recordings`                      |
-//! | Linux   | `~/Videos/meetily-recordings` (or Documents)       |
+//! | Windows | `%USERPROFILE%\Music\konspekt-recordings`           |
+//! | macOS   | `~/Movies/konspekt-recordings`                      |
+//! | Linux   | `~/Videos/konspekt-recordings` (or Documents)       |
 //!
 //! Layout is `<folder>/rec-<32 hex>/audio.mp4`, alongside `mic.mp4`,
 //! `system.mp4`, the 16 kHz working tracks in `.work/`, and `metadata.json`.
@@ -250,9 +250,9 @@ impl Default for RecordingPreferences {
 /// recording roots: from a development build that reached into the real
 /// archive.
 #[cfg(debug_assertions)]
-const RECORDINGS_DIR_NAME: &str = "meetily-recordings-dev";
+const RECORDINGS_DIR_NAME: &str = "konspekt-recordings-dev";
 #[cfg(not(debug_assertions))]
-const RECORDINGS_DIR_NAME: &str = "meetily-recordings";
+const RECORDINGS_DIR_NAME: &str = "konspekt-recordings";
 
 /// The recording preferences store. A development build keeps its own too:
 /// the store sits in the per-identifier app data folder the installed
@@ -297,7 +297,7 @@ pub fn get_default_recordings_folder() -> PathBuf {
 /// build — only to take back the development build's own recordings from it.
 #[cfg(debug_assertions)]
 fn release_recordings_folder() -> PathBuf {
-    recordings_base_dir().join("meetily-recordings")
+    recordings_base_dir().join("konspekt-recordings")
 }
 
 /// Moves the recordings this development build's library owns out of the
@@ -452,7 +452,7 @@ fn reject_path_inside_bundle(path: &Path, bundle_root: &Path) -> Result<()> {
 
     if candidate == bundle || candidate.starts_with(&bundle) {
         return Err(anyhow!(
-            "The recordings folder cannot be inside the Talkkeeper app bundle. Choose a folder in Movies, Music, Documents, or another writable location."
+            "The recordings folder cannot be inside the Konspekt app bundle. Choose a folder in Movies, Music, Documents, or another writable location."
         ));
     }
 
@@ -1035,5 +1035,14 @@ mod tests {
         // Anywhere else is not ours to delete.
         assert!(!is_meeting_folder(Path::new("/elsewhere/Meeting"), &roots));
         assert!(!is_meeting_folder(Path::new("/"), &roots));
+    }
+}
+
+#[cfg(test)]
+mod konspekt_names {
+    #[test]
+    fn recordings_never_share_talkkeepers_folder() {
+        assert!(super::RECORDINGS_DIR_NAME.starts_with("konspekt-recordings"));
+        assert!(!super::RECORDINGS_DIR_NAME.contains("meetily"));
     }
 }

@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { Github, Shield, Cpu, Heart, FileText } from "lucide-react"
 
 /**
- * About panel for Talkkeeper. Shows version, a short description,
+ * About panel for Konspekt. Shows version, a short description,
  * and links to the source and privacy policy. Purely informational.
  */
 export function AboutSettings() {
@@ -28,7 +28,7 @@ export function AboutSettings() {
     invoke('open_external_url', { url }).catch((e) => console.error('Failed to open URL:', e));
   };
 
-  const REPO_URL = 'https://github.com/leyvanah/Talkkeeper';
+  const REPO_URL = 'https://github.com/area-ufa1/Konspekt';
   const PROFILE_URL = 'https://github.com/leyvanah';
 
   return (
@@ -40,7 +40,7 @@ export function AboutSettings() {
             M
           </div>
           <div>
-            <h3 className="text-xl font-semibold text-gray-900">Talkkeeper</h3>
+            <h3 className="text-xl font-semibold text-gray-900">Konspekt</h3>
             <p className="text-sm text-gray-600">
               {t('versionTagline', { version })}
             </p>
@@ -114,6 +114,7 @@ export function AboutSettings() {
           {' · '}
           {t('footerLicense')}
         </p>
+        <p className="mt-1">{t('basedOn')}</p>
       </div>
     </div>
   );

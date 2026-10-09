@@ -1,5 +1,11 @@
 # Changelog
 
+## Konspekt 0.1.0 — не выпущено
+
+Форк Talkkeeper (leyvanah/Talkkeeper, `main` @ 7f1b24d), MIT.
+Отдельное приложение: идентификатор `ru.konspekt.app`, бинарник `konspekt.exe`,
+записи в `Music\konspekt-recordings`, данные в папке установки или `%APPDATA%\Konspekt`.
+
 ## 0.2.12 - 2026-08-30
 
 ### Meeting Details

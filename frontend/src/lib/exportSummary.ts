@@ -143,7 +143,7 @@ export function markdownToPlainText(markdown: string): string {
 // ---------- JSON ----------
 function createJson(markdown: string, baseName: string): string {
   const payload = {
-    app: 'Talkkeeper',
+    app: 'Konspekt',
     title: baseName,
     exportedAt: new Date().toISOString(),
     markdown,

@@ -165,7 +165,7 @@ export default function RootLayout({
       } catch (error) {
         console.error('[Layout] Failed to resolve startup state:', error)
         if (cancelled) return
-        setStartupError('Talkkeeper could not verify local startup and crash-report state.')
+        setStartupError('Konspekt could not verify local startup and crash-report state.')
       } finally {
         if (!cancelled) setStartupResolved(true)
       }
@@ -238,7 +238,7 @@ export default function RootLayout({
 
         // In-app prompt with a one-click start action.
         toast(`${app} meeting detected`, {
-          description: 'Capture mic + system audio in Talkkeeper.',
+          description: 'Capture mic + system audio in Konspekt.',
           duration: 20000,
           action: {
             label: 'Start recording',

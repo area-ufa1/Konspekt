@@ -1,9 +1,9 @@
 [package]
 name = "meetily"
-version = "0.2.34"
-description = "Meetily - Actually Free: privacy-first AI meeting assistant"
+version = "0.1.0"
+description = "Konspekt — запись и конспект пар с Claude"
 authors = ["TylerBuza"]
-repository = "https://github.com/TylerBuza/Meetily-ActuallyFree"
+repository = "https://github.com/area-ufa1/Konspekt"
 edition = "2021"
 rust-version = "1.80"
 

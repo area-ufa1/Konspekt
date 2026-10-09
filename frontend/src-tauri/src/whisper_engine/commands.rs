@@ -194,7 +194,7 @@ fn windows_cuda_reconfiguration_status() -> CudaReconfigurationStatus {
                 | CudaDriverState::QueryFailed
         ),
         reconfiguration_required: driver_state == CudaDriverState::Ready && !cuda_compiled,
-        setup_download_url: Some("https://github.com/leyvanah/Talkkeeper/releases".to_string()),
+        setup_download_url: Some("https://github.com/area-ufa1/Konspekt/releases".to_string()),
     }
 }
 
