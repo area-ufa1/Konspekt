@@ -67,7 +67,7 @@ fn english_markdown_after_normalization_result(
         Err(e) => {
             error!(
                 "English normalization pass failed; returning pass-1 markdown without hard fail: {}",
-                e
+                crate::claude_cli::error_for_log(&e)
             );
             Ok(original_markdown.to_string())
         }
@@ -443,7 +443,12 @@ pub async fn generate_meeting_summary(
                         if e.contains("cancelled") {
                             return Err(e);
                         }
-                        error!("Failed processing chunk {}/{}: {}", i + 1, num_chunks, e);
+                        error!(
+                            "Failed processing chunk {}/{}: {}",
+                            i + 1,
+                            num_chunks,
+                            crate::claude_cli::error_for_log(&e)
+                        );
                         last_chunk_error = Some(e);
                     }
                 }

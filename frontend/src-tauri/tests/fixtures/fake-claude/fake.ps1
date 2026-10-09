@@ -11,6 +11,22 @@ function Say($json) {
   [Console]::Out.Flush()
 }
 [System.IO.File]::WriteAllText((Join-Path $marks 'fake.pid'), "$PID")
+# Флаги claude, как они дошли (по одному в строке, в скобках): тест видит,
+# что пустые значения (`--tools ""`) не потерялись по дороге через cmd.exe.
+$flags = for ($i = 2; $i -lt $args.Count; $i++) { "[" + $args[$i] + "]" }
+[System.IO.File]::WriteAllLines((Join-Path $marks 'args.txt'), [string[]]@($flags), $utf8)
+if ($mode -eq 'stderr-exit') {
+  # Как старый Claude Code, не знающий флага: строка в stderr и выход до чтения stdin.
+  [Console]::Error.WriteLine("error: unknown option '--include-partial-messages'")
+  [Console]::Error.Flush()
+  exit 1
+}
+if ($mode -eq 'print') {
+  # Разовый `claude --print --output-format json`: весь stdin — один промпт.
+  $prompt = [Console]::In.ReadToEnd()
+  Say (@{ type = 'result'; subtype = 'success'; is_error = $false; result = "print len $($prompt.Length)" } | ConvertTo-Json -Compress)
+  exit 0
+}
 if ($mode -eq 'hang') {
   # Как node за npm-обёрткой: внук, который живёт сам по себе, и сам процесс,
   # который не выходит по закрытому stdin. Достать их может только убийство дерева.

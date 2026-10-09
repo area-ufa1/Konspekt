@@ -65,7 +65,106 @@ pub struct Dialog {
     /// Всё дерево процесса: при npm-установке прямой потомок — `cmd.exe`,
     /// а сам Claude Code — его `node`. Закрытие (или drop) убивает обоих.
     tree: ProcessTree,
+    /// Хвост stderr: старый Claude Code с незнакомым флагом или сбой cmd.exe
+    /// видны в ошибке, а не «завершился посреди диалога» без причины.
+    stderr: StderrTail,
     _prompt: SystemPromptFile,
+}
+
+/// Сколько последних байт stderr держать.
+const STDERR_TAIL: usize = 2048;
+/// Сколько символов stderr показать в ошибке.
+const STDERR_SHOWN: usize = 300;
+
+/// Последние `STDERR_TAIL` байт stderr процесса. В лог не пишется.
+struct StderrTail {
+    bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    reader: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl StderrTail {
+    fn read(stderr: Option<tokio::process::ChildStderr>) -> StderrTail {
+        use tokio::io::AsyncReadExt;
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reader = stderr.map(|mut stderr| {
+            let bytes = bytes.clone();
+            tokio::spawn(async move {
+                let mut chunk = [0u8; 512];
+                while let Ok(read) = stderr.read(&mut chunk).await {
+                    if read == 0 {
+                        break;
+                    }
+                    let mut tail = bytes.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    tail.extend_from_slice(&chunk[..read]);
+                    let excess = tail.len().saturating_sub(STDERR_TAIL);
+                    tail.drain(..excess);
+                }
+            })
+        });
+        StderrTail { bytes, reader }
+    }
+
+    /// Короткая выдержка: ждёт конца stderr (процесс уже умер) не дольше секунды.
+    async fn excerpt(&mut self) -> String {
+        if let Some(mut reader) = self.reader.take() {
+            if tokio::time::timeout(Duration::from_secs(1), &mut reader).await.is_err() {
+                // stderr держит живой внук — берём то, что успело прийти.
+                self.reader = Some(reader);
+            }
+        }
+        let bytes = self.bytes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        stderr_excerpt(&decode_console(&bytes))
+    }
+}
+
+/// node пишет UTF-8, cmd.exe — в OEM-кодировке консоли (cp866 на русской Windows).
+fn decode_console(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP};
+        if let Ok(len) = i32::try_from(bytes.len()) {
+            unsafe {
+                let needed = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0);
+                if needed > 0 {
+                    let mut wide = vec![0u16; needed as usize];
+                    let written = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), len, wide.as_mut_ptr(), needed);
+                    if written > 0 {
+                        return String::from_utf16_lossy(&wide[..written as usize]);
+                    }
+                }
+            }
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Строки stderr в одну, не длиннее `STDERR_SHOWN` символов (конец важнее начала).
+fn stderr_excerpt(text: &str) -> String {
+    let joined = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" ");
+    let count = joined.chars().count();
+    if count <= STDERR_SHOWN {
+        return joined;
+    }
+    let tail: String = joined.chars().skip(count - STDERR_SHOWN).collect();
+    format!("…{tail}")
+}
+
+/// Текст ошибки «процесс умер» с причиной из stderr, если она есть.
+fn died_message(excerpt: &str) -> String {
+    let mut message = "Claude Code завершился посреди диалога".to_string();
+    if excerpt.is_empty() {
+        return message;
+    }
+    message.push_str(": ");
+    message.push_str(excerpt);
+    let lower = excerpt.to_lowercase();
+    if lower.contains("unknown option") || lower.contains("unknown argument") {
+        message.push_str(". Похоже, Claude Code устарел: выполните в терминале claude update и начните запись заново.");
+    }
+    message
 }
 
 /// Job Object с `KILL_ON_JOB_CLOSE`: закрытие описателя убивает каждый процесс
@@ -170,14 +269,16 @@ impl Dialog {
             .map_err(|e| format!("Не удалось записать системный промпт: {e}"))?;
         let args = args_for(prompt.path(), &config.model);
         let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let mut command = build_command(&config.binary, &arg_refs, &dir);
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+        let mut command = build_command(&config.binary, &arg_refs, &dir)
+            .map_err(|e| format!("Claude Code не запустился: {e}"))?;
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let mut child = command.spawn().map_err(|e| format!("Claude Code не запустился: {e}"))?;
         // Сразу после запуска: cmd.exe ещё не успел породить node, и тот
         // унаследует задание.
         let tree = ProcessTree::adopt(&child);
         let stdin = child.stdin.take().ok_or("нет stdin у Claude Code")?;
         let stdout = child.stdout.take().ok_or("нет stdout у Claude Code")?;
+        let stderr = StderrTail::read(child.stderr.take());
         let (sender, lines) = mpsc::channel(256);
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
@@ -187,13 +288,22 @@ impl Dialog {
                 }
             }
         });
-        Ok(Dialog { child, stdin, lines, idle_timeout: config.idle_timeout, tree, _prompt: prompt })
+        Ok(Dialog { child, stdin, lines, idle_timeout: config.idle_timeout, tree, stderr, _prompt: prompt })
+    }
+
+    /// Процесс умер: ошибка с выдержкой из его stderr.
+    async fn died(&mut self) -> DialogError {
+        DialogError::Died(died_message(&self.stderr.excerpt().await))
     }
 
     pub async fn ask(&mut self, message: &str, mut on_delta: impl FnMut(&str)) -> Result<String, DialogError> {
-        let dead = || DialogError::Died("Claude Code завершился посреди диалога".to_string());
-        self.stdin.write_all(user_message(message).as_bytes()).await.map_err(|_| dead())?;
-        self.stdin.flush().await.map_err(|_| dead())?;
+        let sent = match self.stdin.write_all(user_message(message).as_bytes()).await {
+            Ok(()) => self.stdin.flush().await,
+            Err(error) => Err(error),
+        };
+        if sent.is_err() {
+            return Err(self.died().await);
+        }
         let mut streamed = String::new();
         loop {
             let next = tokio::time::timeout(self.idle_timeout, self.lines.recv()).await;
@@ -204,7 +314,7 @@ impl Dialog {
                         self.idle_timeout.as_secs()
                     )))
                 }
-                Ok(None) => return Err(dead()),
+                Ok(None) => return Err(self.died().await),
                 Ok(Some(line)) => line,
             };
             match parse_line(&line) {
@@ -274,6 +384,56 @@ mod tests {
         let second = dialog.ask("Второй \"вопрос\"\nс переносом", |_| {}).await.unwrap();
         assert!(second.starts_with("turn 2"), "тот же процесс: {second}");
         dialog.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_shim_under_a_spaced_path_gets_its_empty_flags() {
+        // npm-обёртка в профиле «Иван Петров»: cmd.exe не должен съесть кавычки
+        // пути и пустых `--tools ""` / `--setting-sources ""`.
+        let fake = FakeClaude::spaced("echo");
+        let mut dialog = Dialog::spawn(&config(&fake)).await.unwrap();
+        let answer = dialog.ask("Привет", |_| {}).await.unwrap();
+        assert_eq!(answer, "turn 1 len 6");
+        assert!(fake.got_pair("--tools", ""), "{:?}", fake.args());
+        assert!(fake.got_pair("--setting-sources", ""), "{:?}", fake.args());
+        assert!(fake.got_pair("--model", "haiku"), "{:?}", fake.args());
+        dialog.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_process_that_dies_shows_its_stderr() {
+        // Старый Claude Code: «unknown option» в stderr и выход. В ошибке — причина и что делать.
+        let fake = FakeClaude::new("stderr-exit");
+        let mut dialog = Dialog::spawn(&config(&fake)).await.unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(10), dialog.ask("x", |_| {}))
+            .await
+            .expect("ask завис на мёртвом процессе")
+            .unwrap_err();
+        assert!(error.is_crash(), "{error}");
+        let text = error.message();
+        assert!(text.contains("завершился"), "{text}");
+        assert!(text.contains("unknown option '--include-partial-messages'"), "{text}");
+        assert!(text.contains("claude update"), "{text}");
+    }
+
+    #[test]
+    fn stderr_excerpt_is_one_short_line() {
+        assert_eq!(stderr_excerpt("\r\n  first\r\n\r\nsecond  \n"), "first second");
+        let long = "x".repeat(1000) + "\nlast words";
+        let excerpt = stderr_excerpt(&long);
+        assert!(excerpt.chars().count() <= STDERR_SHOWN + 1, "{}", excerpt.chars().count());
+        assert!(excerpt.starts_with('…') && excerpt.ends_with("last words"));
+        assert_eq!(died_message(""), "Claude Code завершился посреди диалога");
+        assert!(!died_message("Segmentation fault").contains("claude update"));
+    }
+
+    #[test]
+    fn oem_stderr_is_decoded() {
+        // «Ошибка» в cp866 — так пишет cmd.exe на русской Windows.
+        let cp866 = [0x8E, 0xE8, 0xA8, 0xA1, 0xAA, 0xA0];
+        let decoded = decode_console(&cp866);
+        assert!(!decoded.is_empty() && !decoded.contains('\u{fffd}'), "{decoded}");
+        assert_eq!(decode_console("ok ✓".as_bytes()), "ok ✓");
     }
 
     #[tokio::test]

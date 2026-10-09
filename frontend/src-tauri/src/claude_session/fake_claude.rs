@@ -13,7 +13,18 @@ pub(crate) struct FakeClaude {
 
 impl FakeClaude {
     pub(crate) fn new(mode: &str) -> FakeClaude {
-        let dir = tempfile::tempdir().unwrap();
+        Self::in_dir(mode, tempfile::tempdir().unwrap())
+    }
+
+    /// Обёртка в папке с пробелом в пути — как `%APPDATA%\npm\claude.cmd`
+    /// у пользователя «Иван Петров».
+    pub(crate) fn spaced(mode: &str) -> FakeClaude {
+        let dir = tempfile::Builder::new().prefix("fake claude ").tempdir().unwrap();
+        assert!(dir.path().to_string_lossy().contains(' '));
+        Self::in_dir(mode, dir)
+    }
+
+    fn in_dir(mode: &str, dir: tempfile::TempDir) -> FakeClaude {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-claude/fake.ps1");
         let binary = dir.path().join("claude.cmd");
         // CRLF: cmd неверно разбирает батники с одними LF.
@@ -40,6 +51,24 @@ impl FakeClaude {
     /// Текст, который подделка получила ходом `turn` (у перезапущенного процесса — с хода 1).
     pub(crate) fn message(&self, turn: u32) -> Option<String> {
         std::fs::read_to_string(self.dir.path().join(format!("msg{turn}.txt"))).ok()
+    }
+
+    /// Флаги claude последнего запуска, как их увидела подделка.
+    pub(crate) fn args(&self) -> Vec<String> {
+        std::fs::read_to_string(self.dir.path().join("args.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let line = line.trim_start_matches('\u{feff}');
+                let line = line.strip_prefix('[').unwrap_or(line);
+                line.strip_suffix(']').unwrap_or(line).to_string()
+            })
+            .collect()
+    }
+
+    /// Пара «флаг значение» дошла до подделки именно так.
+    pub(crate) fn got_pair(&self, flag: &str, value: &str) -> bool {
+        self.args().windows(2).any(|pair| pair[0] == flag && pair[1] == value)
     }
 
     /// PID, записанный подделкой: `fake` — сам powershell, `grandchild` — внук в режиме `hang`.

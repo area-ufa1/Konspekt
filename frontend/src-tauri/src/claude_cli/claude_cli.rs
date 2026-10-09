@@ -240,26 +240,100 @@ pub fn resolve_binary(configured: Option<&str>) -> Result<PathBuf, String> {
 // Process construction
 // ============================================================================
 
-/// Build a `Command` for the resolved binary.
-///
-/// Windows `.cmd`/`.bat` shims (npm global installs) cannot be started directly
-/// by `CreateProcess`, so they are run through `cmd.exe /C`.
-pub(crate) fn build_command(binary: &Path, args: &[&str], working_dir: &Path) -> Command {
-    let is_shim = binary
+fn is_shim(binary: &Path) -> bool {
+    binary
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
-        .unwrap_or(false);
+        .unwrap_or(false)
+}
 
-    let mut command = if is_shim {
+/// Characters that cannot be carried through `cmd.exe /C` and a batch file's
+/// `%*` safely even inside quotes: `"` ends the quoting, `%` expands variables
+/// and line breaks end the command.
+fn cmd_unsafe_char(c: char) -> bool {
+    matches!(c, '"' | '%' | '\r' | '\n' | '\0')
+}
+
+/// Quote one argument for the line cmd.exe hands to the batch file, which
+/// passes it on through `%*` to node (MSVCRT parsing). Quoted text is literal
+/// for cmd (`& | < > ^ ( )` included, delayed expansion is off), so every
+/// argument that is empty or holds a space or a cmd metacharacter is quoted;
+/// backslashes before the closing quote are doubled per MSVCRT rules. The
+/// caller has already rejected `cmd_unsafe_char`.
+fn quote_shim_arg(arg: &str) -> String {
+    let needs_quotes = arg.is_empty()
+        || arg
+            .chars()
+            .any(|c| matches!(c, ' ' | '\t' | '&' | '|' | '<' | '>' | '^' | '(' | ')' | ',' | ';' | '=' | '!'));
+    if !needs_quotes {
+        return arg.to_string();
+    }
+    let trailing = arg.len() - arg.trim_end_matches('\\').len();
+    format!("\"{}{}\"", arg, "\\".repeat(trailing))
+}
+
+/// The argument string for `cmd.exe` running a `.cmd`/`.bat` shim:
+/// `/D /V:OFF /S /C ""<shim>" <args>"`. With `/S` cmd strips exactly the outer
+/// pair of quotes and runs the rest verbatim, so a shim path with a space and
+/// empty arguments (`--tools ""`) survive. Without `/S` cmd's legacy rule
+/// strips the first and last quote of the whole line and breaks both.
+///
+/// What reaches this line: fixed flags, the model name (checked by
+/// `is_safe_model_name`), the system-prompt file path inside the app's data
+/// folder and the shim path. Prompts and transcripts go through a file and
+/// stdin, never here. A path with `"`, `%` or a line break is refused rather
+/// than guessed at.
+pub(crate) fn shim_command_line(binary: &Path, args: &[&str]) -> Result<String, String> {
+    let binary = binary
+        .to_str()
+        .ok_or_else(|| "The Claude Code CLI path is not valid Unicode".to_string())?;
+    let refuse = |what: &str| {
+        format!(
+            "Cannot run the Claude Code CLI through cmd.exe: {} contains \", % or a line break. \
+             Move it to a folder without these characters.",
+            what
+        )
+    };
+    if binary.chars().any(cmd_unsafe_char) {
+        return Err(refuse("its path"));
+    }
+    let mut line = format!("/D /V:OFF /S /C \"\"{}\"", binary);
+    for arg in args {
+        if arg.chars().any(cmd_unsafe_char) {
+            return Err(refuse("an argument"));
+        }
+        line.push(' ');
+        line.push_str(&quote_shim_arg(arg));
+    }
+    line.push('"');
+    Ok(line)
+}
+
+/// Build a `Command` for the resolved binary.
+///
+/// Windows `.cmd`/`.bat` shims (npm global installs) cannot be started directly
+/// by `CreateProcess`, so they are run through `cmd.exe` with a command line we
+/// build ourselves (`shim_command_line`): the standard quoting breaks on a shim
+/// path with a space combined with empty arguments.
+pub(crate) fn build_command(binary: &Path, args: &[&str], working_dir: &Path) -> Result<Command, String> {
+    let mut command = if is_shim(binary) {
         let mut command = Command::new("cmd.exe");
-        command.arg("/C").arg(binary);
+        #[cfg(target_os = "windows")]
+        {
+            command.raw_arg(shim_command_line(binary, args)?);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            command.arg("/C").arg(binary).args(args);
+        }
         command
     } else {
-        Command::new(binary)
+        let mut command = Command::new(binary);
+        command.args(args);
+        command
     };
 
-    command.args(args);
     command.current_dir(working_dir);
 
     // The CLI renders differently when it thinks a human is watching.
@@ -272,7 +346,7 @@ pub(crate) fn build_command(binary: &Path, args: &[&str], working_dir: &Path) ->
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    command
+    Ok(command)
 }
 
 /// A scratch directory to run the CLI in.
@@ -404,8 +478,12 @@ pub async fn probe(configured: Option<&str>) -> ClaudeCliStatus {
 
     let working_dir = working_dir();
 
+    let version_command = match build_command(&binary, &["--version"], &working_dir) {
+        Ok(command) => command,
+        Err(e) => return ClaudeCliStatus::not_installed(e),
+    };
     let version_output = run_command(
-        build_command(&binary, &["--version"], &working_dir),
+        version_command,
         None,
         PROBE_TIMEOUT,
         None,
@@ -423,14 +501,11 @@ pub async fn probe(configured: Option<&str>) -> ClaudeCliStatus {
         Err(e) => return ClaudeCliStatus::not_installed(e),
     };
 
-    let auth = match run_command(
-        build_command(&binary, &["auth", "status", "--json"], &working_dir),
-        None,
-        PROBE_TIMEOUT,
-        None,
-    )
-    .await
-    {
+    let auth_command = match build_command(&binary, &["auth", "status", "--json"], &working_dir) {
+        Ok(command) => command,
+        Err(e) => return ClaudeCliStatus::not_installed(e),
+    };
+    let auth = match run_command(auth_command, None, PROBE_TIMEOUT, None).await {
         Ok(output) => serde_json::from_str::<ClaudeCliAuth>(output.stdout.trim()).ok(),
         Err(e) => {
             warn!("Failed to read Claude Code CLI auth status: {}", e);
@@ -591,7 +666,7 @@ pub async fn generate(
     );
 
     let output = run_command(
-        build_command(&binary, &args, &working_dir),
+        build_command(&binary, &args, &working_dir)?,
         Some(user_prompt.to_string()),
         GENERATION_TIMEOUT,
         cancellation_token,
@@ -631,6 +706,20 @@ pub async fn generate(
 
     info!("🐞 Claude Code CLI response received ({} chars)", text.len());
     Ok(text.to_string())
+}
+
+/// An error as it may go into a log: a Claude Code failure can carry model
+/// output ("Output began: …") or an "API Error" body quoting the request, so
+/// logs get only its first line, at most 120 characters, and its length. The
+/// full text stays in the error returned to the UI.
+pub fn error_for_log(text: &str) -> String {
+    const LIMIT: usize = 120;
+    let first = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let mut short: String = first.chars().take(LIMIT).collect();
+    if first.chars().count() > LIMIT {
+        short.push('…');
+    }
+    format!("{} ({} chars)", short, text.chars().count())
 }
 
 fn truncate_for_error(value: &str) -> String {
@@ -684,6 +773,61 @@ mod tests {
                 assert!(error.contains("claude auth login"), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn logged_errors_keep_only_a_short_first_line() {
+        let output = "Could not read the Claude Code CLI response: EOF. Output began: ".to_string()
+            + &"секретный текст выжимки ".repeat(20)
+            + "\nвторая строка ответа";
+        let logged = error_for_log(&output);
+        assert!(!logged.contains("вторая строка"), "{logged}");
+        let first_line: String = logged.chars().take_while(|c| *c != '…').collect();
+        assert_eq!(first_line.chars().count(), 120, "{logged}");
+        assert!(logged.ends_with(&format!("({} chars)", output.chars().count())), "{logged}");
+        assert_eq!(error_for_log("Overloaded"), "Overloaded (10 chars)");
+    }
+
+    #[test]
+    fn shim_line_keeps_spaced_path_and_empty_args() {
+        let line = shim_command_line(
+            Path::new(r"C:\Users\Ivan Petrov\AppData\Roaming\npm\claude.cmd"),
+            &["-p", "--tools", "", "--system-prompt-file", r"C:\a b\p.txt", "--model", "opus[1m]", r"C:\dir\"],
+        )
+        .unwrap();
+        assert_eq!(
+            line,
+            r#"/D /V:OFF /S /C ""C:\Users\Ivan Petrov\AppData\Roaming\npm\claude.cmd" -p --tools "" --system-prompt-file "C:\a b\p.txt" --model opus[1m] C:\dir\""#
+        );
+        assert_eq!(quote_shim_arg("a&b"), "\"a&b\"");
+        assert_eq!(quote_shim_arg(r"C:\with space\"), r#""C:\with space\\""#);
+    }
+
+    #[test]
+    fn shim_line_refuses_what_cmd_would_reinterpret() {
+        for bad in ["say \"hi\"", "100%", "%PATH%", "two\nlines"] {
+            assert!(shim_command_line(Path::new(r"C:\npm\claude.cmd"), &["--x", bad]).is_err(), "{bad}");
+        }
+        assert!(shim_command_line(Path::new(r"C:\50%\claude.cmd"), &[]).is_err());
+    }
+
+    /// The one-shot path through an npm shim under a profile with a space:
+    /// the empty `--tools ""` and `--setting-sources ""` must reach the CLI.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn generate_runs_a_shim_under_a_spaced_path() {
+        use crate::claude_session::fake_claude::FakeClaude;
+        let fake = FakeClaude::spaced("print");
+        let binary = fake.binary.to_str().unwrap().to_string();
+        let result = {
+            let _policy = crate::network_policy::test_lock();
+            crate::network_policy::set_for_test(false);
+            generate(Some(&binary), "haiku", "Отвечай коротко", "Привет & 100% \"кавычки\"", None).await
+        };
+        assert_eq!(result.unwrap(), "print len 23");
+        assert!(fake.got_pair("--tools", ""), "{:?}", fake.args());
+        assert!(fake.got_pair("--setting-sources", ""), "{:?}", fake.args());
+        assert!(fake.got_pair("--model", "haiku"), "{:?}", fake.args());
     }
 
     #[test]

@@ -770,7 +770,8 @@ impl SummaryService {
     async fn update_process_failed(pool: &SqlitePool, meeting_id: &str, error_msg: &str) {
         error!(
             "Processing failed for meeting_id {}: {}",
-            meeting_id, error_msg
+            meeting_id,
+            crate::claude_cli::error_for_log(error_msg)
         );
         if let Err(e) =
             SummaryProcessesRepository::update_process_failed(pool, meeting_id, error_msg).await

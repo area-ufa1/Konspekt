@@ -181,8 +181,9 @@ winreg = "0.55"
 # dragged (minibar_dock.rs), which needs the monitor's work area in WM_MOVING.
 # Security, System_JobObjects and System_Threading: the Claude Code dialog runs
 # in a Job Object so a force-kill reaches node behind an npm claude.cmd shim
-# (claude_session/dialog.rs).
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# (claude_session/dialog.rs). Globalization: the dialog's stderr from cmd.exe
+# comes in the console's OEM code page and is decoded for the error text.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Quick unlock: a Windows Hello prompt plus DPAPI. The version is already in the
 # tree via tauri, so this adds feature flags rather than a crate to compile.
 # Security_Credentials (the TPM-backed KeyCredentialManager) is deliberately
