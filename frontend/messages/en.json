@@ -1603,5 +1603,21 @@
     "testButton": "Test model reply",
     "testOk": "Claude Code replied",
     "testFailed": "Failed: {message}"
+  },
+  "assistant": {
+    "tab": "Assistant",
+    "notesTab": "Notes",
+    "placeholder": "Ask about the class…  (Enter to send)",
+    "send": "Ask",
+    "quickMissed": "What did I miss in the last 5 minutes?",
+    "quickTerm": "Explain the last term",
+    "quickNow": "What are they talking about now?",
+    "empty": "Ask about what is being said. The answer will appear here.",
+    "thinking": "Thinking…",
+    "askedAt": "at {time}",
+    "unavailable": "The assistant is unavailable",
+    "failed": "Failed: {message}",
+    "savedTitle": "Questions to the assistant",
+    "savedEmpty": "No questions were asked during this recording."
   }
 }
