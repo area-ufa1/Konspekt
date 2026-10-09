@@ -23,6 +23,8 @@ const CRASH_WINDOW: Duration = Duration::from_secs(300);
 const CRASH_LIMIT: usize = 3;
 
 const STOPPED: &str = "Запись остановлена";
+/// Пока слушатель начала записи проверяет Claude Code и разогревает диалог (5–15 с).
+pub const STARTING: &str = "Ассистент запускается…";
 const NOT_RECORDING: &str = "Запись не идёт — ассистент работает во время записи";
 /// Пустая причина = на старте записи был выбран не Claude Code; провайдер сменили посреди записи.
 pub const PROVIDER_CHANGED: &str =
@@ -77,6 +79,8 @@ pub struct LiveAssistant {
 enum Snapshot {
     #[default]
     NotRecording,
+    /// Запись началась, диалог поднимается (`begin` → `start`); число — поколение `begin`.
+    Starting(u64),
     Deferred,
     Running { disabled: Option<String>, model: Option<String> },
 }
@@ -129,15 +133,30 @@ fn shown(reason: &str) -> String {
 }
 
 impl LiveAssistant {
-    /// Начало записи: метка берётся до проверки Claude Code.
+    /// Начало записи: метка берётся до проверки Claude Code. Окно сразу видит
+    /// «Ассистент запускается…», а не «Запись не идёт», пока идут проверка,
+    /// запуск и разогрев; `start` сменит статус на итоговый.
     pub fn begin(&self) -> StartToken {
-        StartToken(self.generation.load(Ordering::SeqCst))
+        // Под замком снимка: `request_stop` не вклинится между чтением поколения
+        // и публикацией и не оставит «запускается» после конца записи.
+        let mut snapshot = self.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = self.generation.load(Ordering::SeqCst);
+        *snapshot = Snapshot::Starting(generation);
+        StartToken(generation)
     }
 
     /// Конец записи, синхронная часть: всё, что запускается или ждёт Claude,
     /// узнаёт об остановке сразу. Закрывает процесс `finish_stop`.
     pub fn request_stop(&self) -> StopToken {
-        let previous = self.generation.fetch_add(1, Ordering::SeqCst);
+        let previous = {
+            let mut snapshot = self.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = self.generation.fetch_add(1, Ordering::SeqCst);
+            // Запись кончилась, не успев поднять диалог: `start` его уже не поставит.
+            if matches!(*snapshot, Snapshot::Starting(started) if started <= previous) {
+                *snapshot = Snapshot::NotRecording;
+            }
+            previous
+        };
         self.stop_signal.notify_waiters();
         StopToken(previous)
     }
@@ -150,7 +169,13 @@ impl LiveAssistant {
             return;
         }
         let live = guard.take();
-        self.publish(None);
+        {
+            let mut snapshot = self.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Следующая запись уже поднимает свой диалог — её «запускается» не трогаем.
+            if !matches!(*snapshot, Snapshot::Starting(started) if started > token.0) {
+                *snapshot = Snapshot::NotRecording;
+            }
+        }
         drop(guard);
         if let Some(dialog) = live.and_then(|live| live.dialog) {
             dialog.close().await;
@@ -221,6 +246,7 @@ impl LiveAssistant {
             Snapshot::NotRecording => {
                 AssistantStatus { available: false, reason: Some("Запись не идёт".into()), model: None }
             }
+            Snapshot::Starting(_) => AssistantStatus { available: false, reason: Some(STARTING.into()), model: None },
             Snapshot::Deferred if crate::network_policy::local_only() => AssistantStatus {
                 available: false,
                 reason: Some(crate::claude_cli::LOCAL_ONLY_REFUSAL.into()),
@@ -373,7 +399,7 @@ impl LiveAssistant {
                     return Err(error);
                 }
                 Some(Err(crash)) => {
-                    log::warn!("Ассистент: Claude Code упал (попытка {}): {crash}", attempt + 1);
+                    log::warn!("Ассистент: Claude Code упал (попытка {}): {}", attempt + 1, brief(crash.message()));
                     discard(dialog);
                     let reported = live.crash(crash.into_message());
                     self.publish(Some(&*live));
@@ -829,6 +855,41 @@ mod tests {
         let status = assistant.status().await;
         assert_eq!(status.reason.as_deref(), Some("Запись не идёт"), "после stop диалог не поставлен");
         assert!(fake.wait_for(FakeClaude::exited, Duration::from_secs(6)).await, "процесс claude не закрыт");
+    }
+
+    #[tokio::test]
+    async fn status_during_setup_says_starting_not_not_recording() {
+        // Запись идёт, слушатель ещё проверяет Claude Code и разогревает диалог.
+        let fake = FakeClaude::new("slow-warmup"); // на разогрев отвечает через 3 с
+        let assistant = Arc::new(LiveAssistant::default());
+        let token = assistant.begin();
+        let status = assistant.status().await;
+        assert_eq!(status, AssistantStatus { available: false, reason: Some(STARTING.into()), model: None });
+        let starting = {
+            let assistant = assistant.clone();
+            let setup = ready(&fake);
+            tokio::spawn(async move { assistant.start(setup, token).await })
+        };
+        assert!(fake.wait_for(FakeClaude::started, Duration::from_secs(15)).await, "подделка не получила разогрев");
+        assert_eq!(assistant.status().await.reason.as_deref(), Some(STARTING), "и во время разогрева");
+        starting.await.unwrap();
+        let status = assistant.status().await;
+        assert!(status.available, "после разогрева: {:?}", status.reason);
+        assistant.stop().await;
+        assert_eq!(assistant.status().await.reason.as_deref(), Some("Запись не идёт"));
+    }
+
+    #[tokio::test]
+    async fn a_late_stop_keeps_the_next_recording_starting() {
+        let first = FakeClaude::new("echo");
+        let assistant = LiveAssistant::default();
+        start(&assistant, ready(&first)).await;
+        let ended = assistant.request_stop();
+        let token = assistant.begin();
+        assistant.finish_stop(ended).await;
+        assert_eq!(assistant.status().await.reason.as_deref(), Some(STARTING), "конец прошлой записи не сбил статус новой");
+        assistant.start(StartSetup::Unavailable("Claude Code не найден".into()), token).await;
+        assert_eq!(assistant.status().await.reason.as_deref(), Some("Claude Code не найден"));
     }
 
     #[tokio::test]
