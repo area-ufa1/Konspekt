@@ -97,6 +97,7 @@ async fn with_schema(pool: SqlitePool) -> SqlitePool {
     for migration in [
         include_str!("../migrations/20260822000000_add_whisper_vocabulary.sql"),
         include_str!("../migrations/20260905000000_add_external_stt_config.sql"),
+        include_str!("../migrations/20261010000000_add_claude_cli_settings.sql"),
     ] {
         sqlx::raw_sql(migration).execute(&pool).await.unwrap();
     }

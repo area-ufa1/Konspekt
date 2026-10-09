@@ -92,6 +92,12 @@ pub struct Setting {
     #[sqlx(rename = "ollamaEndpoint")]
     #[serde(rename = "ollamaEndpoint")]
     pub ollama_endpoint: Option<String>,
+    #[sqlx(rename = "claudeCliPath")]
+    #[serde(rename = "claudeCliPath")]
+    pub claude_cli_path: Option<String>,
+    #[sqlx(rename = "claudeLiveModel")]
+    #[serde(rename = "claudeLiveModel")]
+    pub claude_live_model: Option<String>,
 }
 
 /// The transcription settings row, without its credentials — see [`Setting`].

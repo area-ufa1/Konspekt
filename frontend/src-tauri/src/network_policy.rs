@@ -44,6 +44,22 @@ pub fn local_only() -> bool {
     LOCAL_ONLY.load(Ordering::SeqCst)
 }
 
+/// Тесты, меняющие режим, держат этот замок всё время теста: флаг общий на
+/// процесс, а `cargo test` гоняет тесты параллельно в разных модулях.
+#[cfg(test)]
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Только под `test_lock()`.
+#[cfg(test)]
+pub(crate) fn set_for_test(local_only: bool) {
+    LOCAL_ONLY.store(local_only, Ordering::SeqCst);
+}
+
 /// Whether `url` points at this computer.
 pub fn is_loopback_url(url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url.trim()) else {

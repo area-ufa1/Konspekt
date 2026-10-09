@@ -35,6 +35,7 @@ macro_rules! perf_trace {
 // Declare audio module
 pub mod api;
 pub mod audio;
+pub mod claude_cli;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
@@ -801,6 +802,13 @@ pub fn run() {
             live_assistant::ask_live_assistant,
             live_assistant::ask_person,
             live_assistant::ollama_embed,
+            claude_cli::commands::claude_cli_get_status,
+            claude_cli::commands::claude_cli_list_models,
+            claude_cli::commands::claude_cli_get_path,
+            claude_cli::commands::claude_cli_save_path,
+            claude_cli::commands::claude_cli_test_connection,
+            claude_cli::commands::claude_cli_get_live_model,
+            claude_cli::commands::claude_cli_save_live_model,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
             summary::summary_engine::commands::builtin_ai_get_model_info,
