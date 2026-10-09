@@ -37,6 +37,11 @@ impl FakeClaude {
         self.dir.path().join("exited").exists()
     }
 
+    /// Текст, который подделка получила ходом `turn` (у перезапущенного процесса — с хода 1).
+    pub(crate) fn message(&self, turn: u32) -> Option<String> {
+        std::fs::read_to_string(self.dir.path().join(format!("msg{turn}.txt"))).ok()
+    }
+
     /// PID, записанный подделкой: `fake` — сам powershell, `grandchild` — внук в режиме `hang`.
     pub(crate) fn pid(&self, name: &str) -> Option<u32> {
         let text = std::fs::read_to_string(self.dir.path().join(format!("{name}.pid"))).ok()?;

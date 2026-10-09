@@ -28,7 +28,9 @@ pub async fn setup_for_recording(pool: &sqlx::SqlitePool) -> StartSetup {
         return StartSetup::Unavailable(String::new());
     }
     if crate::network_policy::local_only() {
-        return StartSetup::Unavailable(crate::claude_cli::LOCAL_ONLY_REFUSAL.into());
+        // Не выключаем ассистента на всю запись: отказ — пока режим включён,
+        // первый вопрос после выключения поднимет диалог (manager::ask).
+        return StartSetup::Deferred;
     }
     let path = SettingsRepository::get_claude_cli_path(pool).await.ok().flatten();
     let status = crate::claude_cli::probe(path.as_deref()).await;
@@ -111,7 +113,10 @@ pub async fn assistant_ask<R: Runtime>(
     let (answer, model) = if provider == "claude-cli" {
         let model = assistant.status().await.model.unwrap_or_default();
         let input = AskInput { question: &question, asked_at, lines: &lines, notes: &notes };
-        (assistant.ask(input, |text| emit(text, false)).await?, model)
+        let answer = assistant.ask(input, || setup_for_recording(pool), |text| emit(text, false)).await?;
+        // Отложенный диалог узнаёт модель только при первом вопросе.
+        let model = if model.is_empty() { assistant.status().await.model.unwrap_or_default() } else { model };
+        (answer, model)
     } else if LLMProvider::from_str(&provider) == Ok(LLMProvider::Claude) {
         let resolved = crate::live_assistant::resolve_assistant_model(pool).await?;
         let mut cursor = super::context::Cursor::default();

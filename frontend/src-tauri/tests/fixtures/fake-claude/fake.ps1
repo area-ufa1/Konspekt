@@ -25,18 +25,28 @@ while ($true) {
   $line = [Console]::In.ReadLine()
   if ($null -eq $line) { break }
   $turn++
+  # Что пришло ходом N — тест читает, что именно ушло в Claude. Новый процесс
+  # (перезапуск) пишет поверх с хода 1.
+  $content = ($line | ConvertFrom-Json).message.content
+  [System.IO.File]::WriteAllText((Join-Path $marks "msg$turn.txt"), $content, $utf8)
   if ($turn -eq 1) { New-Item -ItemType File -Force (Join-Path $marks 'started') | Out-Null }
   if ($mode -eq 'crash-second' -and $turn -ge 2) { exit 3 }
-  if ($mode -eq 'silent') { continue }
+  if ($mode -eq 'silent' -or $mode -eq 'stuck') { continue }
   if ($mode -eq 'slow-warmup' -and $turn -eq 1) { Start-Sleep -Seconds 3 }
   if ($mode -eq 'slow') { Start-Sleep -Milliseconds 800 }
   if ($mode -eq 'limit') {
     Say '{"type":"result","subtype":"success","is_error":true,"result":"usage limit reached"}'
     continue
   }
-  $content = ($line | ConvertFrom-Json).message.content
   $len = $content.Length
-  foreach ($part in @("turn $turn", " len $len")) {
+  $parts = @("turn $turn", " len $len")
+  $final = "turn $turn len $len"
+  if ($mode -eq 'parrot') {
+    # Повторяет присланное: тест видит, что вернулось из Claude.
+    $parts = @($content)
+    $final = $content
+  }
+  foreach ($part in $parts) {
     $delta = @{ type = 'stream_event'; event = @{ type = 'content_block_delta'; delta = @{ type = 'text_delta'; text = $part } } } | ConvertTo-Json -Compress -Depth 5
     if ($mode -eq 'split') {
       # Половина строки, пауза, вторая половина — как обрыв между двумя чтениями stdout.
@@ -49,8 +59,9 @@ while ($true) {
       Say $delta
     }
   }
-  Say (@{ type = 'result'; subtype = 'success'; is_error = $false; result = "turn $turn len $len" } | ConvertTo-Json -Compress)
+  Say (@{ type = 'result'; subtype = 'success'; is_error = $false; result = $final } | ConvertTo-Json -Compress)
 }
-if ($mode -eq 'hang') { Start-Sleep -Seconds 600 }
+# `hang` и `stuck` не выходят по закрытому stdin: достать их может только убийство дерева.
+if ($mode -eq 'hang' -or $mode -eq 'stuck') { Start-Sleep -Seconds 600 }
 # stdin закрыт — вышли сами; тест видит, что процесс закрыт, а не брошен.
 New-Item -ItemType File -Force (Join-Path $marks 'exited') | Out-Null

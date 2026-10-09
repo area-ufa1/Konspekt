@@ -557,21 +557,26 @@ pub fn run() {
 
             // Ассистент записи: диалог с Claude Code живёт ровно столько, сколько запись.
             {
+                use crate::claude_session::manager::LiveAssistant;
                 use tauri::Listener;
                 let handle = app.handle().clone();
                 app.listen("recording-started", move |_event| {
                     let handle = handle.clone();
+                    // Метка — сразу, в порядке событий: конец записи, пришедший во
+                    // время проверки Claude Code, отменит этот запуск.
+                    let token = handle.state::<LiveAssistant>().begin();
                     tauri::async_runtime::spawn(async move {
                         let Some(state) = handle.try_state::<crate::state::AppState>() else { return };
                         let setup = crate::claude_session::commands::setup_for_recording(state.db_manager.pool()).await;
-                        handle.state::<crate::claude_session::manager::LiveAssistant>().start(setup).await;
+                        handle.state::<LiveAssistant>().start(setup, token).await;
                     });
                 });
                 let handle = app.handle().clone();
                 app.listen("recording-stopped", move |_event| {
                     let handle = handle.clone();
+                    let token = handle.state::<LiveAssistant>().request_stop();
                     tauri::async_runtime::spawn(async move {
-                        handle.state::<crate::claude_session::manager::LiveAssistant>().stop().await;
+                        handle.state::<LiveAssistant>().finish_stop(token).await;
                     });
                 });
             }

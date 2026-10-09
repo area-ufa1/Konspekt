@@ -20,6 +20,43 @@ pub struct DialogConfig {
     pub idle_timeout: Duration,
 }
 
+/// Почему ход не дал ответа. Менеджер решает по виду: `Died`/`Silent` — падение
+/// процесса (перезапуск, счёт падений), `Failed` — Claude жив и ответил ошибкой.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DialogError {
+    /// Процесс вышел или оборвал stdin/stdout.
+    Died(String),
+    /// Ни одного события дольше `idle_timeout` при активном запросе.
+    Silent(String),
+    /// `result` с `is_error`: лимит, вход, сбой хода. Текст — от Claude Code.
+    Failed(String),
+}
+
+impl DialogError {
+    /// Процесс больше не годится: упал или замолчал.
+    pub fn is_crash(&self) -> bool {
+        matches!(self, DialogError::Died(_) | DialogError::Silent(_))
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            DialogError::Died(text) | DialogError::Silent(text) | DialogError::Failed(text) => text,
+        }
+    }
+
+    pub fn into_message(self) -> String {
+        match self {
+            DialogError::Died(text) | DialogError::Silent(text) | DialogError::Failed(text) => text,
+        }
+    }
+}
+
+impl std::fmt::Display for DialogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
 pub struct Dialog {
     child: Child,
     stdin: ChildStdin,
@@ -153,15 +190,20 @@ impl Dialog {
         Ok(Dialog { child, stdin, lines, idle_timeout: config.idle_timeout, tree, _prompt: prompt })
     }
 
-    pub async fn ask(&mut self, message: &str, mut on_delta: impl FnMut(&str)) -> Result<String, String> {
-        let dead = || "Claude Code завершился посреди диалога".to_string();
+    pub async fn ask(&mut self, message: &str, mut on_delta: impl FnMut(&str)) -> Result<String, DialogError> {
+        let dead = || DialogError::Died("Claude Code завершился посреди диалога".to_string());
         self.stdin.write_all(user_message(message).as_bytes()).await.map_err(|_| dead())?;
         self.stdin.flush().await.map_err(|_| dead())?;
         let mut streamed = String::new();
         loop {
             let next = tokio::time::timeout(self.idle_timeout, self.lines.recv()).await;
             let line = match next {
-                Err(_) => return Err(format!("Claude Code не ответил за {} с", self.idle_timeout.as_secs())),
+                Err(_) => {
+                    return Err(DialogError::Silent(format!(
+                        "Claude Code не ответил за {} с",
+                        self.idle_timeout.as_secs()
+                    )))
+                }
                 Ok(None) => return Err(dead()),
                 Ok(Some(line)) => line,
             };
@@ -171,7 +213,7 @@ impl Dialog {
                     on_delta(&text);
                 }
                 Event::Done(text) => return Ok(if text.is_empty() { streamed } else { text }),
-                Event::Failed(reason) => return Err(reason),
+                Event::Failed(reason) => return Err(DialogError::Failed(reason)),
                 Event::Other => {}
             }
         }
@@ -265,7 +307,8 @@ mod tests {
         let fake = FakeClaude::new("limit");
         let mut dialog = Dialog::spawn(&config(&fake)).await.unwrap();
         let error = dialog.ask("x", |_| {}).await.unwrap_err();
-        assert!(error.contains("usage limit reached"), "{error}");
+        assert!(matches!(&error, DialogError::Failed(text) if text.contains("usage limit reached")), "{error}");
+        assert!(!error.is_crash());
         dialog.close().await;
     }
 
@@ -279,7 +322,8 @@ mod tests {
             .await
             .expect("ask завис на мёртвом процессе")
             .unwrap_err();
-        assert!(error.contains("завершился"), "{error}");
+        assert!(matches!(&error, DialogError::Died(text) if text.contains("завершился")), "{error}");
+        assert!(error.is_crash());
     }
 
     use crate::claude_session::fake_claude::process_alive;
@@ -333,7 +377,8 @@ mod tests {
         let mut dialog = Dialog::spawn(&config).await.unwrap();
         let started = std::time::Instant::now();
         let error = dialog.ask("x", |_| {}).await.unwrap_err();
-        assert!(error.contains("не ответил"), "{error}");
+        assert!(matches!(&error, DialogError::Silent(text) if text.contains("не ответил")), "{error}");
+        assert!(error.is_crash());
         assert!(started.elapsed() < Duration::from_secs(5));
         dialog.close().await;
     }
