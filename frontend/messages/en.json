@@ -990,7 +990,8 @@
     "ownSpeechDetectorTitle": "Keep your voice when you both talk at once",
     "ownSpeechDetectorDescription": "Windows stops cleaning the microphone itself and only tells us when you are the one speaking. The recording is the ordinary microphone, so your voice is never turned down — not even when you talk over the other person — and a second, unrecorded stream is used purely to tell your speech from the speakers' echo. A microphone passage is dropped only when the speakers were playing under it and you could not be heard at the time. The cost: the recording keeps the room as it sounds, including whatever trace of the speakers our own echo canceller leaves behind. Windows only.",
     "liveTextTitle": "Live transcript while recording",
-    "liveTextDescription": "Text appears on screen as you record. Turn it off to record only sound, like a dictaphone: the processor is left alone during the recording and the text is made afterwards. If recognition is busy with another recording, a new one starts this way on its own."
+    "liveTextDescription": "Text appears on screen as you record. Turn it off to record only sound, like a dictaphone: the processor is left alone during the recording and the text is made afterwards. If recognition is busy with another recording, a new one starts this way on its own.",
+    "providerClaudeCode": "Claude Code (subscription)"
   },
   "person": {
     "overviewPrompt": "Create a concise profile overview of this person based only on their meeting records. Cover recurring topics, decisions, commitments, collaboration patterns, and recent changes. Cite the relevant meeting title and date for every substantive point, and clearly distinguish recorded facts from inference. Answer in English.",
@@ -1583,5 +1584,24 @@
     "seekTo": "Go to {time} in the recording",
     "saveFailed": "Could not save the note",
     "loadFailed": "Could not read the notes"
+  },
+  "claudeCli": {
+    "title": "Claude Code (subscription)",
+    "description": "Konspekt runs your installed Claude Code with your own sign-in. It uses your Pro or Max subscription limits; no API key is needed.",
+    "pathLabel": "Path to claude.exe",
+    "pathPlaceholder": "Empty — find automatically",
+    "check": "Check",
+    "checking": "Checking…",
+    "statusReady": "Ready: {version}, signed in ({plan})",
+    "notInstalled": "Claude Code was not found. Install it and sign in.",
+    "notLoggedIn": "Claude Code is installed but not signed in. Run in a terminal: claude auth login",
+    "install": "How to install Claude Code",
+    "apiKeyEnvWarning": "The ANTHROPIC_API_KEY environment variable is set: Claude Code will spend that key instead of your subscription.",
+    "liveModelLabel": "Live panel model",
+    "liveModelHint": "Answers questions during recording. Haiku is faster, Sonnet is more detailed.",
+    "haikuNeedsUpdate": "Haiku 5.5 needs Claude Code 2.1.293 or newer. Update with: claude update",
+    "testButton": "Test model reply",
+    "testOk": "Claude Code replied",
+    "testFailed": "Failed: {message}"
   }
 }
