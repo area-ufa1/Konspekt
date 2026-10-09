@@ -25,7 +25,84 @@ pub struct Dialog {
     stdin: ChildStdin,
     lines: mpsc::Receiver<String>,
     idle_timeout: Duration,
+    /// Всё дерево процесса: при npm-установке прямой потомок — `cmd.exe`,
+    /// а сам Claude Code — его `node`. Закрытие (или drop) убивает обоих.
+    tree: ProcessTree,
     _prompt: SystemPromptFile,
+}
+
+/// Job Object с `KILL_ON_JOB_CLOSE`: закрытие описателя убивает каждый процесс
+/// в задании, включая внуков, которых `Child::kill` не достаёт.
+#[cfg(windows)]
+struct ProcessTree(Option<windows_sys::Win32::Foundation::HANDLE>);
+
+// Описатель задания — просто ядерный объект, им можно владеть из любого потока.
+#[cfg(windows)]
+unsafe impl Send for ProcessTree {}
+#[cfg(windows)]
+unsafe impl Sync for ProcessTree {}
+
+#[cfg(windows)]
+impl ProcessTree {
+    fn adopt(child: &Child) -> ProcessTree {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        let Some(process) = child.raw_handle() else {
+            return ProcessTree(None);
+        };
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                log::warn!("Claude Code: Job Object не создан, принудительный стоп дойдёт только до прямого потомка");
+                return ProcessTree(None);
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) != 0;
+            if !configured || AssignProcessToJobObject(job, process as HANDLE) == 0 {
+                log::warn!("Claude Code: процесс не помещён в Job Object, принудительный стоп дойдёт только до прямого потомка");
+                CloseHandle(job);
+                return ProcessTree(None);
+            }
+            ProcessTree(Some(job))
+        }
+    }
+
+    /// Убить всё дерево сейчас (закрыть задание).
+    fn kill(&mut self) {
+        if let Some(job) = self.0.take() {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(job);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+#[cfg(not(windows))]
+struct ProcessTree;
+
+#[cfg(not(windows))]
+impl ProcessTree {
+    fn adopt(_child: &Child) -> ProcessTree {
+        ProcessTree
+    }
+    fn kill(&mut self) {}
 }
 
 pub fn args_for(prompt_file: &Path, model: &str) -> Vec<String> {
@@ -59,6 +136,9 @@ impl Dialog {
         let mut command = build_command(&config.binary, &arg_refs, &dir);
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
         let mut child = command.spawn().map_err(|e| format!("Claude Code не запустился: {e}"))?;
+        // Сразу после запуска: cmd.exe ещё не успел породить node, и тот
+        // унаследует задание.
+        let tree = ProcessTree::adopt(&child);
         let stdin = child.stdin.take().ok_or("нет stdin у Claude Code")?;
         let stdout = child.stdout.take().ok_or("нет stdout у Claude Code")?;
         let (sender, lines) = mpsc::channel(256);
@@ -70,7 +150,7 @@ impl Dialog {
                 }
             }
         });
-        Ok(Dialog { child, stdin, lines, idle_timeout: config.idle_timeout, _prompt: prompt })
+        Ok(Dialog { child, stdin, lines, idle_timeout: config.idle_timeout, tree, _prompt: prompt })
     }
 
     pub async fn ask(&mut self, message: &str, mut on_delta: impl FnMut(&str)) -> Result<String, String> {
@@ -101,8 +181,12 @@ impl Dialog {
         let _ = self.stdin.shutdown().await;
         drop(self.stdin);
         if tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await.is_err() {
+            // Сначала дерево целиком, пока cmd.exe жив; потом прямой потомок.
+            self.tree.kill();
             let _ = self.child.kill().await;
         }
+        // Внуки, пережившие штатный выход прямого потомка, гаснут с заданием.
+        self.tree.kill();
     }
 }
 
@@ -127,6 +211,14 @@ mod tests {
                      "--include-partial-messages", "--no-session-persistence", "--model", "haiku"] {
             assert!(args.iter().any(|a| a == flag), "нет {flag}");
         }
+        // Флаги безопасности: без инструментов, без вопросов о разрешениях, свой промпт.
+        let pair = |flag: &str, value: &str| {
+            args.windows(2).any(|w| w[0] == flag && w[1] == value)
+        };
+        assert!(pair("--tools", ""), "--tools \"\"");
+        assert!(pair("--permission-mode", "dontAsk"), "--permission-mode dontAsk");
+        assert!(pair("--system-prompt-file", "C:/p.txt"), "--system-prompt-file <путь>");
+        assert!(args.iter().any(|a| a == "--no-session-persistence"));
     }
 
     #[tokio::test]
@@ -182,8 +274,55 @@ mod tests {
         let fake = FakeClaude::new("crash-second");
         let mut dialog = Dialog::spawn(&config(&fake)).await.unwrap();
         dialog.ask("one", |_| {}).await.unwrap();
-        let error = dialog.ask("two", |_| {}).await.unwrap_err();
+        // Сломанное распознавание EOF должно уронить тест, а не повесить прогон.
+        let error = tokio::time::timeout(Duration::from_secs(4), dialog.ask("two", |_| {}))
+            .await
+            .expect("ask завис на мёртвом процессе")
+            .unwrap_err();
         assert!(error.contains("завершился"), "{error}");
+    }
+
+    use crate::claude_session::fake_claude::process_alive;
+
+    /// Подделка `hang`: не выходит по закрытому stdin и держит живого внука.
+    async fn hung_dialog() -> (FakeClaude, Dialog, [u32; 3]) {
+        let fake = FakeClaude::new("hang");
+        let mut dialog = Dialog::spawn(&config(&fake)).await.unwrap();
+        dialog.ask("x", |_| {}).await.unwrap();
+        let shim = dialog.child.id().expect("cmd.exe жив");
+        let pids = [shim, fake.pid("fake").unwrap(), fake.pid("grandchild").unwrap()];
+        for pid in pids {
+            assert!(process_alive(pid), "до закрытия жив {pid}");
+        }
+        (fake, dialog, pids)
+    }
+
+    async fn all_gone(pids: [u32; 3]) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if pids.iter().all(|&pid| !process_alive(pid)) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        pids.iter().all(|&pid| !process_alive(pid))
+    }
+
+    #[tokio::test]
+    async fn close_kills_a_hung_process_tree_after_five_seconds() {
+        let (_fake, dialog, pids) = hung_dialog().await;
+        let started = std::time::Instant::now();
+        dialog.close().await;
+        let took = started.elapsed();
+        assert!(took >= Duration::from_secs(5) && took < Duration::from_secs(8), "close шёл {took:?}");
+        assert!(all_gone(pids).await, "после close остались процессы из {pids:?}");
+    }
+
+    #[tokio::test]
+    async fn dropping_a_dialog_kills_its_process_tree() {
+        let (_fake, dialog, pids) = hung_dialog().await;
+        drop(dialog);
+        assert!(all_gone(pids).await, "после drop остались процессы из {pids:?}");
     }
 
     #[tokio::test]

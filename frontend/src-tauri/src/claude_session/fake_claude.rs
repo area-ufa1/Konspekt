@@ -37,6 +37,32 @@ impl FakeClaude {
         self.dir.path().join("exited").exists()
     }
 
+    /// PID, записанный подделкой: `fake` — сам powershell, `grandchild` — внук в режиме `hang`.
+    pub(crate) fn pid(&self, name: &str) -> Option<u32> {
+        let text = std::fs::read_to_string(self.dir.path().join(format!("{name}.pid"))).ok()?;
+        text.trim().parse().ok()
+    }
+}
+
+/// Жив ли процесс с этим PID.
+pub(crate) fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code) != 0;
+        CloseHandle(handle);
+        ok && code == STILL_ACTIVE as u32
+    }
+}
+
+impl FakeClaude {
     pub(crate) async fn wait_for(&self, what: fn(&FakeClaude) -> bool, limit: Duration) -> bool {
         let deadline = Instant::now() + limit;
         while Instant::now() < deadline {

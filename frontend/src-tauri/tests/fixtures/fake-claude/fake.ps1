@@ -10,6 +10,16 @@ function Say($json) {
   [Console]::Out.WriteLine($json)
   [Console]::Out.Flush()
 }
+[System.IO.File]::WriteAllText((Join-Path $marks 'fake.pid'), "$PID")
+if ($mode -eq 'hang') {
+  # Как node за npm-обёрткой: внук, который живёт сам по себе, и сам процесс,
+  # который не выходит по закрытому stdin. Достать их может только убийство дерева.
+  $info = [System.Diagnostics.ProcessStartInfo]::new('powershell.exe', '-NoProfile -Command Start-Sleep -Seconds 600')
+  $info.UseShellExecute = $false
+  $info.CreateNoWindow = $true
+  $grandchild = [System.Diagnostics.Process]::Start($info)
+  [System.IO.File]::WriteAllText((Join-Path $marks 'grandchild.pid'), "$($grandchild.Id)")
+}
 $turn = 0
 while ($true) {
   $line = [Console]::In.ReadLine()
@@ -41,5 +51,6 @@ while ($true) {
   }
   Say (@{ type = 'result'; subtype = 'success'; is_error = $false; result = "turn $turn len $len" } | ConvertTo-Json -Compress)
 }
+if ($mode -eq 'hang') { Start-Sleep -Seconds 600 }
 # stdin закрыт — вышли сами; тест видит, что процесс закрыт, а не брошен.
 New-Item -ItemType File -Force (Join-Path $marks 'exited') | Out-Null
