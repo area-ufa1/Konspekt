@@ -56,4 +56,5 @@ jobs:
         shell: cmd
         env:
           CARGO_BUILD_JOBS: 2
-        run: scripts\dev-shell-test.cmd
+        # на раннере нет аудиоустройства вывода
+        run: scripts\dev-shell-test.cmd -- --skip audio::playback_monitor::tests::test_get_output_device
