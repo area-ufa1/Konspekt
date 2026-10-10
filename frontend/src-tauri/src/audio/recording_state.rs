@@ -401,6 +401,24 @@ impl RecordingState {
         *self.audio_sender.lock().unwrap() = Some(sender);
     }
 
+    /// Ask the pipeline to cut the speech in progress now (see `live_flush`).
+    /// Goes through the audio channel, behind the audio already captured, and
+    /// also during Pause — unlike audio, which Pause discards. `false` when
+    /// there is no pipeline.
+    pub fn request_live_cut(&self) -> bool {
+        let chunk = AudioChunk {
+            data: Vec::new(),
+            sample_rate: 16000,
+            timestamp: 0.0,
+            chunk_id: super::live_flush::LIVE_CUT_CHUNK_ID,
+            device_type: DeviceType::Microphone,
+        };
+        match self.audio_sender.lock().unwrap().as_ref() {
+            Some(sender) => sender.send(chunk).is_ok(),
+            None => false,
+        }
+    }
+
     pub fn send_audio_chunk(&self, chunk: AudioChunk) -> Result<()> {
         // Don't send audio chunks when paused
         if self.is_paused() {

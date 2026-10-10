@@ -25,6 +25,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { Summary, Transcript } from '@/types';
+import { AssistantTurnsSection } from './AssistantTurnsSection';
 
 type Bucket = 'summary' | 'actions' | 'topics' | 'insights';
 
@@ -260,12 +261,14 @@ interface InsightTabsProps {
   aiSummary: Summary | null;
   transcripts: Transcript[];
   generating?: boolean;
+  meetingId?: string;
 }
 
 export function InsightTabs({
   aiSummary,
   transcripts,
   generating = false,
+  meetingId,
 }: InsightTabsProps) {
   const t = useTranslations('meetingDetails');
   const [done, setDone] = useState<Set<string>>(new Set());
@@ -411,6 +414,7 @@ export function InsightTabs({
             </div>
           )}
         </section>
+        {meetingId && <AssistantTurnsSection meetingId={meetingId} />}
       </div>
     </div>
   );

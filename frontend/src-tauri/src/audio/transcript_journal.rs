@@ -56,6 +56,8 @@ enum Record {
     NoteRemoved { id: String },
     /// The order of the notes, written when one was started between others.
     NoteOrder { ids: Vec<String> },
+    /// A question to the recording's assistant with its answer.
+    AssistantTurn(crate::claude_session::AssistantTurn),
 }
 
 /// The journal of the recording now running, if any.
@@ -67,6 +69,8 @@ struct Journal {
     /// The notes as they stand, so the window can show them again after it
     /// was closed or reloaded mid-recording.
     notes: Vec<Note>,
+    /// The assistant's turns so far, for the same reason.
+    turns: Vec<crate::claude_session::AssistantTurn>,
 }
 
 impl Journal {
@@ -84,6 +88,16 @@ fn current() -> std::sync::MutexGuard<'static, Option<Journal>> {
     CURRENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Тесты, которые открывают, закрывают или читают текущий журнал, держат этот
+/// замок всё время теста: журнал записи один на процесс.
+#[cfg(test)]
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Starts the journal for a recording that has just got its folder.
 pub fn begin(folder: &Path, title: &str, started_at: &str) {
     let path = folder.join(JOURNAL_FILE);
@@ -93,6 +107,7 @@ pub fn begin(folder: &Path, title: &str, started_at: &str) {
             folder: folder.to_path_buf(),
             file,
             notes: Vec::new(),
+            turns: Vec::new(),
         },
         Err(error) => {
             warn!("Could not open the transcript journal: {error}");
@@ -180,6 +195,23 @@ pub fn current_notes() -> Vec<Note> {
         .unwrap_or_default()
 }
 
+/// Ход ассистента записи, что идёт сейчас. Ошибку видит вызывающий: ответ
+/// показан, но не сохранится.
+pub fn add_turn(turn: &crate::claude_session::AssistantTurn) -> Result<(), String> {
+    let mut guard = current();
+    let journal = guard.as_mut().ok_or("Запись не идёт")?;
+    journal
+        .append(&Record::AssistantTurn(turn.clone()))
+        .map_err(|error| format!("Не удалось сохранить ответ ассистента: {error}"))?;
+    journal.turns.push(turn.clone());
+    Ok(())
+}
+
+/// Ходы ассистента текущей записи — чтобы окно показало их после перезагрузки.
+pub fn current_turns() -> Vec<crate::claude_session::AssistantTurn> {
+    current().as_ref().map(|journal| journal.turns.clone()).unwrap_or_default()
+}
+
 /// The notes the journal in `folder` holds, for the meeting being saved from
 /// it. A journal that does not open gives none; the meeting is saved anyway.
 pub fn notes_in(folder: &Path) -> Vec<Note> {
@@ -187,6 +219,17 @@ pub fn notes_in(folder: &Path) -> Vec<Note> {
         Ok(journal) => journal.map(|journal| journal.notes).unwrap_or_default(),
         Err(error) => {
             warn!("Could not read the notes of a recording: {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// Ходы ассистента из журнала в `folder` — для встречи, которая сохраняется.
+pub fn turns_in(folder: &Path) -> Vec<crate::claude_session::AssistantTurn> {
+    match read(folder) {
+        Ok(journal) => journal.map(|journal| journal.turns).unwrap_or_default(),
+        Err(error) => {
+            warn!("Could not read the assistant turns of a recording: {error}");
             Vec::new()
         }
     }
@@ -232,6 +275,9 @@ pub struct Unsaved {
     /// The owner's notes, kept with the meeting when it is restored.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    /// Вопросы ассистенту во время записи — сохраняются со встречей.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<crate::claude_session::AssistantTurn>,
     /// Set when there is no transcript to restore, only audio: restoring then
     /// means recognising the recording again.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -276,6 +322,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
     let mut started_at = String::new();
     let mut segments: Vec<TranscriptSegment> = Vec::new();
     let mut notes: Vec<Note> = Vec::new();
+    let mut turns = Vec::new();
     let mut skipped = 0usize;
 
     for line in BufReader::new(file).lines() {
@@ -312,6 +359,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
                 // Stable: a note the list does not name keeps its place after the rest.
                 notes.sort_by_key(|note| ids.iter().position(|id| *id == note.id).unwrap_or(usize::MAX));
             }
+            Some(Record::AssistantTurn(turn)) => turns.push(turn),
             None => skipped += 1,
         }
     }
@@ -327,6 +375,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
         last_updated,
         segments,
         notes,
+        turns,
         audio_only: None,
     }))
 }
@@ -453,6 +502,7 @@ pub async fn list_unsaved_recordings<R: tauri::Runtime>(
                     last_updated: last_written(&folder),
                     segments: Vec::new(),
                     notes,
+                    turns: Vec::new(),
                     audio_only: Some(audio),
                 });
             }
@@ -511,9 +561,10 @@ mod tests {
         }
     }
 
-    // One test, because the running journal is process-wide.
+    // Holds test_lock(): the running journal is process-wide.
     #[test]
     fn a_journal_reads_back_with_updates_applied_and_torn_lines_skipped() {
+        let _journal = test_lock();
         let root = tempfile::tempdir().unwrap();
         let folder = root.path().join("meeting");
         std::fs::create_dir(&folder).unwrap();
@@ -564,6 +615,18 @@ mod tests {
         remove(&folder);
         assert!(read(&folder).unwrap().is_none());
         assert!(find(&[root.path().to_path_buf()]).is_empty());
+    }
+
+    #[test]
+    fn assistant_turns_survive_in_the_journal() {
+        let _journal = test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        begin(dir.path(), "пара", "2026-10-10T09:00:00Z");
+        let turn = crate::claude_session::AssistantTurn { id: "t1".into(), asked_at_sec: 12.0, question: "q".into(), answer: "a".into(), model: "haiku".into(), created_at: "2026-10-10T09:00:12Z".into() };
+        add_turn(&turn).unwrap();
+        assert_eq!(current_turns(), vec![turn.clone()]);
+        end();
+        assert_eq!(turns_in(dir.path()), vec![turn]);
     }
 
     #[test]

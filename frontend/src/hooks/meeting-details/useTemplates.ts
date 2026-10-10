@@ -3,6 +3,9 @@ import { useTranslations } from 'next-intl';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 
+// Konspekt summarizes lectures: the built-in «lecture» template is the default.
+export const DEFAULT_TEMPLATE_ID = 'lecture';
+
 export function useTemplates() {
   const t = useTranslations('meetingDetails');
   const [availableTemplates, setAvailableTemplates] = useState<Array<{
@@ -10,7 +13,7 @@ export function useTemplates() {
     name: string;
     description: string;
   }>>([]);
-  const [selectedTemplate, setSelectedTemplate] = useState<string>('standard_meeting');
+  const [selectedTemplate, setSelectedTemplate] = useState<string>(DEFAULT_TEMPLATE_ID);
 
   const refreshTemplates = useCallback(async () => {
     try {
@@ -46,7 +49,7 @@ export function useTemplates() {
   const deleteCustomTemplate = useCallback(async (templateId: string) => {
     await invokeTauri('api_delete_custom_template', { templateId });
     await refreshTemplates();
-    if (selectedTemplate === templateId) setSelectedTemplate('standard_meeting');
+    if (selectedTemplate === templateId) setSelectedTemplate(DEFAULT_TEMPLATE_ID);
   }, [refreshTemplates, selectedTemplate]);
 
   const isCustomTemplate = useCallback(async (templateId: string): Promise<boolean> => {

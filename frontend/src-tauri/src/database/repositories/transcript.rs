@@ -16,6 +16,7 @@ impl TranscriptsRepository {
         meeting_title: &str,
         transcripts: &[TranscriptSegment],
         notes: &[crate::meeting_notes::Note],
+        turns: &[crate::claude_session::AssistantTurn],
         folder_path: Option<String>,
         recording_started_at: Option<DateTime<Utc>>,
     ) -> Result<String, SqlxError> {
@@ -104,6 +105,12 @@ impl TranscriptsRepository {
 
         if let Err(e) = crate::meeting_notes::store(&mut transaction, &meeting_id, notes).await {
             error!("Failed to save the notes of meeting {}: {}", meeting_id, e);
+            transaction.rollback().await?;
+            return Err(e);
+        }
+
+        if let Err(e) = crate::assistant_turns::store(&mut transaction, &meeting_id, turns).await {
+            error!("Failed to save the assistant turns of meeting {}: {}", meeting_id, e);
             transaction.rollback().await?;
             return Err(e);
         }

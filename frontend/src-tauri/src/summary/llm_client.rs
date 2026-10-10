@@ -9,6 +9,10 @@ use tracing::info;
 
 const REQUEST_TIMEOUT_DURATION: Duration = Duration::from_secs(300);
 
+/// Where Claude-by-key requests go; the live assistant checks the network
+/// policy against it before waiting on anything.
+pub const CLAUDE_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+
 // Generic structure for OpenAI-compatible API chat messages
 #[derive(Debug, Serialize)]
 pub struct ChatMessage {
@@ -75,6 +79,7 @@ pub enum LLMProvider {
     OpenRouter,
     BuiltInAI,
     CustomOpenAI,
+    ClaudeCli,
 }
 
 impl LLMProvider {
@@ -88,6 +93,7 @@ impl LLMProvider {
             "openrouter" => Ok(Self::OpenRouter),
             "builtin-ai" | "local-llama" | "localllama" => Ok(Self::BuiltInAI),
             "custom-openai" => Ok(Self::CustomOpenAI),
+            "claude-cli" | "claude-code" => Ok(Self::ClaudeCli),
             _ => Err(format!("Unsupported LLM provider: {}", s)),
         }
     }
@@ -108,6 +114,7 @@ impl LLMProvider {
 /// * `temperature` - Optional temperature (for CustomOpenAI provider)
 /// * `top_p` - Optional top_p (for CustomOpenAI provider)
 /// * `app_data_dir` - Optional app data directory (for BuiltInAI provider)
+/// * `claude_cli_path` - Optional explicit path to the Claude Code CLI (for ClaudeCli provider)
 /// * `cancellation_token` - Optional token to cancel the request
 ///
 /// # Returns
@@ -125,6 +132,7 @@ pub async fn generate_summary(
     temperature: Option<f32>,
     top_p: Option<f32>,
     app_data_dir: Option<&PathBuf>,
+    claude_cli_path: Option<&str>,
     cancellation_token: Option<&CancellationToken>,
     // Names to keep out of whatever leaves this machine. The caller owns the
     // session so that every request of one summary speaks the same language,
@@ -152,6 +160,20 @@ pub async fn generate_summary(
         )
         .await
         .map_err(|e| e.to_string());
+    }
+
+    if *provider == LLMProvider::ClaudeCli {
+        // local-only проверяет сам claude_cli::generate — первой строкой.
+        let system_prompt = crate::privacy::hide(hide, system_prompt);
+        let user_prompt = crate::privacy::hide(hide, user_prompt);
+        return crate::claude_cli::generate(
+            claude_cli_path,
+            model_name,
+            &system_prompt,
+            &user_prompt,
+            cancellation_token,
+        )
+        .await;
     }
 
     let (api_url, mut headers) = match provider {
@@ -198,12 +220,13 @@ pub async fn generate_summary(
                     .parse()
                     .map_err(|_| "Invalid anthropic version".to_string())?,
             );
-            ("https://api.anthropic.com/v1/messages".to_string(), header_map)
+            (CLAUDE_MESSAGES_URL.to_string(), header_map)
         }
         LLMProvider::BuiltInAI => {
             // This case is handled earlier with early returns
             unreachable!("BuiltInAI is handled before this match statement")
         }
+        LLMProvider::ClaudeCli => unreachable!("Claude Code is handled before the HTTP providers"),
     };
 
     // Add authorization header for non-Claude providers
@@ -366,6 +389,7 @@ fn provider_name(provider: &LLMProvider) -> &str {
         LLMProvider::BuiltInAI => "Built-in AI",
         LLMProvider::OpenRouter => "OpenRouter",
         LLMProvider::CustomOpenAI => "Custom OpenAI",
+        LLMProvider::ClaudeCli => "Claude Code",
     }
 }
 
@@ -388,6 +412,7 @@ pub fn leaves_this_machine(
             !custom_openai_endpoint.is_some_and(crate::network_policy::is_loopback_url)
         }
         LLMProvider::OpenAI | LLMProvider::Claude | LLMProvider::Groq | LLMProvider::OpenRouter => true,
+        LLMProvider::ClaudeCli => true,
     }
 }
 
@@ -405,5 +430,24 @@ mod tests {
         assert!(leaves_this_machine(&LLMProvider::CustomOpenAI, None, Some("https://api.example.com/v1")));
         assert!(leaves_this_machine(&LLMProvider::Claude, None, None));
         assert!(leaves_this_machine(&LLMProvider::OpenAI, None, None));
+    }
+
+    #[test]
+    fn claude_code_is_a_provider_that_leaves_the_machine() {
+        assert_eq!(LLMProvider::from_str("claude-cli").unwrap(), LLMProvider::ClaudeCli);
+        assert_eq!(LLMProvider::from_str("claude-code").unwrap(), LLMProvider::ClaudeCli);
+        assert!(leaves_this_machine(&LLMProvider::ClaudeCli, None, None));
+    }
+
+    #[tokio::test]
+    async fn claude_code_is_refused_in_local_only_mode() {
+        let _policy = crate::network_policy::test_lock();
+        crate::network_policy::set_for_test(true);
+        let result = generate_summary(
+            &reqwest::Client::new(), &LLMProvider::ClaudeCli, "sonnet", "", "system", "user",
+            None, None, None, None, None, None, Some("C:\\nowhere\\claude.exe"), None, None,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), crate::claude_cli::LOCAL_ONLY_REFUSAL);
     }
 }

@@ -66,6 +66,16 @@ fn should_emit_transcript(transcript: &str, _confidence: Option<f32>) -> bool {
     !transcript.trim().is_empty()
 }
 
+/// One more segment finished, with or without text: counted for the dispatcher
+/// and for a question to the assistant waiting on the live text (`live_flush`).
+/// Called after the segment's `transcript-update`, whose Rust listener stores
+/// the line before `emit` returns. Returns the new count.
+fn complete_chunk(chunks_completed: &AtomicU64) -> u64 {
+    let completed = chunks_completed.fetch_add(1, Ordering::SeqCst) + 1;
+    crate::audio::live_flush::PROGRESS.segment_done();
+    completed
+}
+
 // NOTE: get_transcript_history and get_recording_meeting_name functions
 // have been moved to recording_commands.rs where they have access to RECORDING_MANAGER
 
@@ -74,6 +84,9 @@ pub fn start_transcription_task<R: Runtime>(
     app: AppHandle<R>,
     transcription_receiver: tokio::sync::mpsc::UnboundedReceiver<AudioChunk>,
 ) -> tokio::task::JoinHandle<()> {
+    // A new recording: its pipeline numbers segments from zero, and so does
+    // the count a question to the assistant waits on (see `live_flush`).
+    crate::audio::live_flush::PROGRESS.reset();
     tokio::spawn(async move {
         info!("🚀 Starting optimized parallel transcription task - guaranteeing zero chunk loss");
 
@@ -176,7 +189,7 @@ pub fn start_transcription_task<R: Runtime>(
                             if !engine_clone.is_model_loaded().await {
                                 warn!("⚠️ Worker {}: Model unloaded, but continuing to preserve chunk {}", worker_id, chunk.chunk_id);
                                 // Still count as completed even if we can't process
-                                chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                complete_chunk(&chunks_completed_clone);
                                 continue;
                             }
 
@@ -229,7 +242,7 @@ pub fn start_transcription_task<R: Runtime>(
                                 }
                                 // Mixed is for disk only — never STT'd.
                                 crate::audio::recording_state::DeviceType::Mixed => {
-                                    chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                    complete_chunk(&chunks_completed_clone);
                                     continue;
                                 }
                             };
@@ -302,7 +315,7 @@ pub fn start_transcription_task<R: Runtime>(
                                                 "🔇 Worker {} dropped a microphone segment that repeats the system channel: '{}'",
                                                 worker_id, transcript
                                             );
-                                            chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                            complete_chunk(&chunks_completed_clone);
                                             continue;
                                         }
 
@@ -355,12 +368,12 @@ pub fn start_transcription_task<R: Runtime>(
                                         TranscriptionError::AudioTooShort { .. } => {
                                             // Skip silently, this is expected for very short chunks
                                             info!("Worker {}: {}", worker_id, e);
-                                            chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                            complete_chunk(&chunks_completed_clone);
                                             continue;
                                         }
                                         TranscriptionError::ModelNotLoaded => {
                                             warn!("Worker {}: Model unloaded during transcription", worker_id);
-                                            chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                            complete_chunk(&chunks_completed_clone);
                                             continue;
                                         }
                                         _ => {
@@ -373,7 +386,7 @@ pub fn start_transcription_task<R: Runtime>(
 
                             // Mark chunk as completed
                             let completed =
-                                chunks_completed_clone.fetch_add(1, Ordering::SeqCst) + 1;
+                                complete_chunk(&chunks_completed_clone);
                             let queued = chunks_queued_clone.load(Ordering::SeqCst);
 
                             // PERFORMANCE: Only log progress every 5th chunk to reduce I/O overhead

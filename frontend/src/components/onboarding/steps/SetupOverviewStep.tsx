@@ -78,7 +78,7 @@ export function SetupOverviewStep() {
 
   const openIssues = () => {
     invoke('open_external_url', {
-      url: 'https://github.com/leyvanah/Talkkeeper',
+      url: 'https://github.com/area-ufa1/Konspekt',
     }).catch((error) => console.error('Failed to open GitHub issues:', error));
   };
 
@@ -92,7 +92,7 @@ export function SetupOverviewStep() {
     if (!cudaStatus?.setupDownloadUrl) return;
     invoke('open_external_url', {
       url: cudaStatus.setupDownloadUrl,
-    }).catch((error) => console.error('Failed to open latest Talkkeeper setup:', error));
+    }).catch((error) => console.error('Failed to open latest Konspekt setup:', error));
   };
 
   const accelerationLabel = cudaStatus?.reconfigurationRequired

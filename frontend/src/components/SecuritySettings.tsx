@@ -619,7 +619,7 @@ export function SecuritySettings() {
                   // Asked for before the work starts, so that closing the file
                   // picker does not report a backup that was never written.
                   const target = await save({
-                    defaultPath: 'talkkeeper-key-backup.json',
+                    defaultPath: 'konspekt-key-backup.json',
                     filters: [{ name: 'JSON', extensions: ['json'] }],
                   })
                   if (!target) return

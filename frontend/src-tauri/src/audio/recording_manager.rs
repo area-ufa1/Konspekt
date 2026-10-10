@@ -408,6 +408,11 @@ impl RecordingManager {
         self.state.is_active()
     }
 
+    /// Ask the pipeline to cut the speech in progress (see `live_flush`).
+    pub fn request_live_cut(&self) -> bool {
+        self.state.request_live_cut()
+    }
+
     /// Get recording statistics
     pub fn get_stats(&self) -> super::recording_state::RecordingStats {
         self.state.get_stats()

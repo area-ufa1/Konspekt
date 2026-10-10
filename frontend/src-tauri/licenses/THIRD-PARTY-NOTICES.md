@@ -1,6 +1,6 @@
-# Third-party components in the Talkkeeper installer
+# Third-party components in the Konspekt installer
 
-Talkkeeper itself is MIT-licensed (`LICENSE.md` in the source repository).
+Konspekt itself is MIT-licensed (`LICENSE.md` in the source repository).
 The installer also carries the components below, each under its own license.
 The installed copy of this file is in `licenses\` in the program folder.
 
@@ -32,7 +32,7 @@ installer; each is under the license published with it on Hugging Face.
 FFmpeg is free software under the GNU General Public License, version 3. The
 full license, the description of this exact build and where to get its
 source code are in `licenses\ffmpeg\` (`LICENSE.txt`, `BUILD.txt`,
-`SOURCE.md`). Talkkeeper runs the unmodified `ffmpeg.exe` as a separate
+`SOURCE.md`). Konspekt runs the unmodified `ffmpeg.exe` as a separate
 program.
 
 ## llama.cpp, whisper.cpp, ggml

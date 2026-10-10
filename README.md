@@ -1,3 +1,19 @@
+# Konspekt
+
+Запись и конспект пар с Claude. Форк [Talkkeeper](https://github.com/leyvanah/Talkkeeper)
+(MIT): русская расшифровка GigaAM, выжимка и ответы на вопросы во время пары через ваш
+собственный Claude Code (подписка Pro/Max) или ключ Claude API.
+
+Установка: скачайте `Konspekt_<версия>_x64-setup.exe` из
+[Releases](https://github.com/area-ufa1/Konspekt/releases). Установщик не подписан —
+SmartScreen покажет «неизвестный издатель»: «Подробнее» → «Выполнить в любом случае».
+Для ассистента: установите Claude Code и выполните `claude auth login`, затем
+Настройки → Саммари → «Claude Code (подписка)». Konspekt поставляется с включённым
+режимом «Только этот компьютер» — для ассистента и выжимки через Claude Code
+выключите его в Настройки → Защита.
+
+---
+
 # Talkkeeper
 
 <p align="center">

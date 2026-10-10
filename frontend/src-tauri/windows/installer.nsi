@@ -100,7 +100,7 @@ Var MeetilyInstallProgress
 Var MeetilyDisplayedProgress
 
 Name "${PRODUCTNAME}"
-BrandingText "Talkkeeper"
+BrandingText "Konspekt"
 OutFile "${OUTFILE}"
 
 ; We don't actually use this value as default install path,
@@ -185,7 +185,7 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !endif
 
 ; ---------------------------------------------------------------------------
-; Talkkeeper — full custom dark chrome (not stock Wizard97)
+; Konspekt — full custom dark chrome (not stock Wizard97)
 ; Tokens: bg #0A0C10  surface #12151C  text #E6EBF5  muted #A8B3C7  teal #2DD4BF
 ; ---------------------------------------------------------------------------
 !define MUI_BGCOLOR 0A0C10
@@ -196,13 +196,13 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; Hide the grey header bitmap strip separators as much as MUI allows
 !define MUI_HEADER_TRANSPARENT_TEXT
 
-!define MUI_WELCOMEPAGE_TITLE "Welcome to Talkkeeper"
+!define MUI_WELCOMEPAGE_TITLE "Welcome to Konspekt"
 !define MUI_WELCOMEPAGE_TITLE_3LINES
-!define MUI_WELCOMEPAGE_TEXT "Private meeting capture, transcription, and summaries — entirely on your PC.$\r$\n$\r$\nSetup will install Talkkeeper and local runtimes (WebView2, Visual C++, CUDA libraries).$\r$\n$\r$\nNothing is uploaded. Click Next to continue."
+!define MUI_WELCOMEPAGE_TEXT "Private meeting capture, transcription, and summaries — entirely on your PC.$\r$\n$\r$\nSetup will install Konspekt and local runtimes (WebView2, Visual C++, CUDA libraries).$\r$\n$\r$\nNothing is uploaded. Click Next to continue."
 
 !define MUI_FINISHPAGE_TITLE "You're all set"
 !define MUI_FINISHPAGE_TITLE_3LINES
-!define MUI_FINISHPAGE_TEXT "Talkkeeper is installed.$\r$\n$\r$\nLaunch it to finish a 30-second onboarding (your name + a quick audio check). Everything stays on this machine."
+!define MUI_FINISHPAGE_TEXT "Konspekt is installed.$\r$\n$\r$\nLaunch it to finish a 30-second onboarding (your name + a quick audio check). Everything stays on this machine."
 
 !define MUI_INSTFILESPAGE_FINISHHEADER_TEXT "$(tkFinishHeader)"
 !define MUI_INSTFILESPAGE_FINISHHEADER_SUBTEXT "$(tkFinishSub)"
@@ -1066,7 +1066,7 @@ Function .onInit
         StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
       ${EndIf}
     !else if "${INSTALLMODE}" == "currentUser"
-      StrCpy $INSTDIR "$LOCALAPPDATA\Talkkeeper"
+      StrCpy $INSTDIR "$LOCALAPPDATA\Konspekt"
     !endif
 
     Call RestorePreviousInstallLocation
@@ -1498,9 +1498,9 @@ Section Uninstall
     StrCpy $KeyRescued 1
     ${If} ${FileExists} "$INSTDIR\data\keystore.json"
       StrCpy $KeyRescued 0
-      CreateDirectory "$DOCUMENTS\Talkkeeper-key-backup"
-      CopyFiles /SILENT "$INSTDIR\data\keystore.json" "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
-      ${If} ${FileExists} "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
+      CreateDirectory "$DOCUMENTS\Konspekt-key-backup"
+      CopyFiles /SILENT "$INSTDIR\data\keystore.json" "$DOCUMENTS\Konspekt-key-backup\keystore.json"
+      ${If} ${FileExists} "$DOCUMENTS\Konspekt-key-backup\keystore.json"
         StrCpy $KeyRescued 1
         ${If} $PassiveMode <> 1
           MessageBox MB_ICONINFORMATION|MB_OK "$(tkKeyRescued)"

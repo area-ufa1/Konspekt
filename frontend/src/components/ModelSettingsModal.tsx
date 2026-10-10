@@ -30,9 +30,11 @@ import {
 } from '@/components/ui/command';
 import { cn, isOllamaNotInstalledError } from '@/lib/utils';
 import { toast } from 'sonner';
+import { ClaudeCliSettings } from '@/components/ClaudeCliSettings';
+import { ClaudeCliStatus, isClaudeCliReady } from '@/lib/claude-cli';
 
 export interface ModelConfig {
-  provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai';
+  provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'claude-cli' | 'custom-openai';
   model: string;
   whisperModel: string;
   apiKey?: string | null;
@@ -234,8 +236,11 @@ export function ModelSettingsModal({
     openai: openaiModels.length > 0 ? openaiModels : OPENAI_FALLBACK_MODELS,
     openrouter: openRouterModels.map((m) => m.id),
     'builtin-ai': builtinAiModels.map((m) => m.name),
+    'claude-cli': ['sonnet', 'opus', 'haiku'],
     'custom-openai': customOpenAIModel ? [customOpenAIModel] : [], // User specifies model manually
   };
+
+  const [claudeCliStatus, setClaudeCliStatus] = useState<ClaudeCliStatus | null>(null);
 
   const requiresApiKey =
     modelConfig.provider === 'claude' ||
@@ -254,6 +259,7 @@ export function ModelSettingsModal({
   );
 
   const isDoneDisabled =
+    (modelConfig.provider === 'claude-cli' && !isClaudeCliReady(claudeCliStatus)) ||
     (requiresApiKey && (!apiKey || (typeof apiKey === 'string' && !apiKey.trim()))) ||
     (modelConfig.provider === 'ollama' && ollamaEndpointChanged) ||
     isCustomOpenAIInvalid;
@@ -272,7 +278,7 @@ export function ModelSettingsModal({
           setModelConfig(data);
 
           // Fetch API key if not included in response and provider requires it
-          if (data.provider !== 'ollama' && !data.apiKey) {
+          if (data.provider !== 'ollama' && data.provider !== 'claude-cli' && !data.apiKey) {
             try {
               const apiKeyData = await invoke('api_get_api_key', {
                 provider: data.provider
@@ -836,9 +842,11 @@ export function ModelSettingsModal({
                 const defaultModel = providerModels && providerModels.length > 0
                   ? providerModels[0]
                   : '';
-                const model = (savedModel && providerModels?.includes(savedModel))
-                  ? savedModel
-                  : defaultModel;
+                const model = provider === 'claude-cli'
+                  ? ((savedModel && providerModels?.includes(savedModel)) ? savedModel : 'sonnet')
+                  : (savedModel && providerModels?.includes(savedModel))
+                    ? savedModel
+                    : defaultModel;
 
                 setModelConfig({
                   ...modelConfig,
@@ -879,6 +887,7 @@ export function ModelSettingsModal({
               </SelectTrigger>
               <SelectContent className="max-h-64 overflow-y-auto">
                 <SelectItem value="builtin-ai">{t('providerBuiltinAiLong')}</SelectItem>
+                <SelectItem value="claude-cli">{t('providerClaudeCode')}</SelectItem>
                 <SelectItem value="claude">Claude</SelectItem>
                 <SelectItem value="custom-openai">{t('providerCustomOpenAI')}</SelectItem>
                 <SelectItem value="groq">Groq</SelectItem>
@@ -1359,6 +1368,12 @@ export function ModelSettingsModal({
                 )}
               </ScrollArea>
             )}
+          </div>
+        )}
+
+        {modelConfig.provider === 'claude-cli' && (
+          <div className="mt-6">
+            <ClaudeCliSettings onStatusChange={setClaudeCliStatus} />
           </div>
         )}
 

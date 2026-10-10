@@ -1,0 +1,60 @@
+name: test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-2022
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # bindgen 0.69 (whisper-rs-sys, llama-cpp-sys-2) misreads headers from
+      # LLVM 19 and later; 18.1.8 is the version the project builds with.
+      LLVM_VERSION: "18.1.8"
+      # LLVM-18.1.8-win64.exe: as listed in winget-pkgs (LLVM.LLVM 18.1.8) and
+      # hashed after download; the installer is pinned, so a file that is not
+      # this exact one is never started.
+      LLVM_SHA256: "94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f"
+      PNPM_VERSION: "11.25.0"
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --global "pnpm@$env:PNPM_VERSION"
+      - run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        run: |
+          $installer = "$env:RUNNER_TEMP\llvm.exe"
+          Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe" -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:LLVM_SHA256) { throw "LLVM installer SHA-256 mismatch: expected $env:LLVM_SHA256, got $actual" }
+          Start-Process $installer -ArgumentList '/S', '/D=C:\LLVM18' -Wait
+          # Wins over the repository's .cargo/config.toml, which points at the
+          # default install location.
+          "LIBCLANG_PATH=C:\LLVM18\bin" >> $env:GITHUB_ENV
+      - name: Frontend install
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Frontend tests
+        working-directory: frontend
+        run: pnpm test
+      - name: Rust tests
+        shell: cmd
+        env:
+          CARGO_BUILD_JOBS: 2
+        # на раннере нет звуковых устройств: эти тесты Talkkeeper падают без них
+        run: scripts\dev-shell-test.cmd -- --skip audio::playback_monitor::tests::test_get_output_device --skip audio::system_audio_commands::tests::test_list_system_audio_devices

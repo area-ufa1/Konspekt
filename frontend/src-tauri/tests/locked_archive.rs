@@ -117,6 +117,7 @@ async fn transcript_lines_are_not_stored_in_the_clear() {
         "Название встречи",
         &[segment],
         &[],
+        &[],
         None,
         None,
     )
@@ -177,6 +178,7 @@ async fn a_note_written_during_the_recording_is_not_stored_in_the_clear() {
         "Название встречи",
         &[],
         &[note],
+        &[],
         None,
         None,
     )

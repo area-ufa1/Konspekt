@@ -57,13 +57,13 @@ export function About() {
                 <div className="mb-3">
                     <Image
                         src="icon_128x128.png"
-                        alt="Talkkeeper Logo"
+                        alt="Konspekt Logo"
                         width={64}
                         height={64}
                         className="mx-auto"
                     />
                 </div>
-                {/* <h1 className="text-xl font-bold text-gray-900">Talkkeeper</h1> */}
+                {/* <h1 className="text-xl font-bold text-gray-900">Konspekt</h1> */}
                 <span className="text-sm text-gray-500"> v{currentVersion}</span>
                 <p className="text-medium text-gray-600 mt-1">
                     {t('tagline')}
@@ -72,7 +72,7 @@ export function About() {
                     {/* No update source of our own yet: point at the releases instead. */}
                     {platform === 'macos' || !UPDATES_AVAILABLE ? (
                         <Button
-                            onClick={() => openExternal('https://github.com/leyvanah/Talkkeeper/releases')}
+                            onClick={() => openExternal('https://github.com/area-ufa1/Konspekt/releases')}
                             variant="outline"
                             size="sm"
                             className="text-xs"
@@ -151,6 +151,7 @@ export function About() {
                         ),
                     })}
                 </p>
+                <p className="mt-1 text-xs text-gray-500">{t('basedOn')}</p>
             </div>
 
             {/* Update Dialog */}

@@ -1,0 +1,33 @@
+{
+  "name": "Лекция",
+  "description": "Конспект университетской лекции: тема, тезисы по порядку с отметками времени, термины, формулы и примеры, экзамен и сроки.",
+  "sections": [
+    {
+      "title": "Кратко",
+      "instruction": "State the topic of the lecture and summarize in 3-5 sentences what it was about. Rely only on the transcript; do not add facts that the lecturer did not say",
+      "format": "paragraph"
+    },
+    {
+      "title": "Тезисы по порядку",
+      "instruction": "List the main points in the same order in which the lecturer presented them. Keep the lecturer's own terminology. Start every item with the recording timestamp in the form [MM:SS] taken from the transcript line where the point starts. Do not invent or reorder points",
+      "format": "list",
+      "item_format": "[MM:SS] main point"
+    },
+    {
+      "title": "Термины и определения",
+      "instruction": "List the terms the lecturer introduced or defined, with the definition exactly as stated in the lecture. Do not add definitions from general knowledge and do not invent terms. If no terms were defined, write a short line saying so",
+      "format": "list",
+      "item_format": "**term** — definition as stated in the lecture"
+    },
+    {
+      "title": "Формулы и примеры",
+      "instruction": "List formulas, worked examples and solved problems from the lecture. Write formulas in plain text or inline code (the viewer does not render LaTeX), keep the lecturer's notation, and give the key steps of each example. Do not invent formulas or examples. If there were none, write only: Не было",
+      "format": "list"
+    },
+    {
+      "title": "Экзамен, ДЗ, сроки",
+      "instruction": "List everything the lecturer said about the exam or credit, homework, deadlines, and what will be on a test (\"this will be on the test\"). Quote deadlines and conditions exactly as said and add the timestamp [MM:SS]. Do not guess. If nothing of this was mentioned, write only: Не упоминалось",
+      "format": "list"
+    }
+  ]
+}

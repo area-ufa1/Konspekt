@@ -39,7 +39,7 @@ export function WindowTitleProvider({ children }: { children: React.ReactNode })
   const [title, setTitle] = useState<string | null>(null);
   const [back, setBack] = useState<Back>(null);
   const [slot, setSlot] = useState<HTMLElement | null>(null);
-  const value = useMemo(() => ({ title: title ?? 'Talkkeeper', setTitle, back, setBack }), [title, back]);
+  const value = useMemo(() => ({ title: title ?? 'Konspekt', setTitle, back, setBack }), [title, back]);
   const slotValue = useMemo(() => ({ slot, setSlot }), [slot]);
   return (
     <WindowTitleContext.Provider value={value}>
@@ -96,7 +96,7 @@ export function useWindowTitle(title: string | null | undefined) {
     import('@tauri-apps/api/window')
       .then(({ getCurrentWindow }) => {
         if (cancelled) return;
-        return getCurrentWindow().setTitle(title ? `${title} — Talkkeeper` : 'Talkkeeper');
+        return getCurrentWindow().setTitle(title ? `${title} — Konspekt` : 'Konspekt');
       })
       .catch(() => {
         // Outside Tauri there is no window to name.
@@ -109,7 +109,7 @@ export function useWindowTitle(title: string | null | undefined) {
 
 export function AppHeader() {
   const context = useContext(WindowTitleContext);
-  const title = context?.title ?? 'Talkkeeper';
+  const title = context?.title ?? 'Konspekt';
   const back = context?.back ?? null;
   const setSlot = useContext(HeaderSlotContext)?.setSlot;
 

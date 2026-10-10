@@ -1,9 +1,9 @@
 [package]
 name = "meetily"
-version = "0.2.34"
-description = "Meetily - Actually Free: privacy-first AI meeting assistant"
+version = "0.1.0"
+description = "Konspekt — запись и конспект пар с Claude"
 authors = ["TylerBuza"]
-repository = "https://github.com/TylerBuza/Meetily-ActuallyFree"
+repository = "https://github.com/area-ufa1/Konspekt"
 edition = "2021"
 rust-version = "1.80"
 
@@ -179,7 +179,11 @@ tauri-winrt-notification = "0.7.2"
 winreg = "0.55"
 # Foundation and Gdi: the compact bar keeps to the screen edge while it is
 # dragged (minibar_dock.rs), which needs the monitor's work area in WM_MOVING.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# Security, System_JobObjects and System_Threading: the Claude Code dialog runs
+# in a Job Object so a force-kill reaches node behind an npm claude.cmd shim
+# (claude_session/dialog.rs). Globalization: the dialog's stderr from cmd.exe
+# comes in the console's OEM code page and is decoded for the error text.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Quick unlock: a Windows Hello prompt plus DPAPI. The version is already in the
 # tree via tauri, so this adds feature flags rather than a crate to compile.
 # Security_Credentials (the TPM-backed KeyCredentialManager) is deliberately

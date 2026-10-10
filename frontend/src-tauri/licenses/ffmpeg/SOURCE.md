@@ -1,7 +1,7 @@
-# FFmpeg in Talkkeeper
+# FFmpeg in Konspekt
 
-Talkkeeper runs `ffmpeg.exe`, installed next to the app, to read and write
-audio. It is an unmodified third-party program, not part of Talkkeeper's own
+Konspekt runs `ffmpeg.exe`, installed next to the app, to read and write
+audio. It is an unmodified third-party program, not part of Konspekt's own
 code, and is licensed separately from it.
 
 | | |

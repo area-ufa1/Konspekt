@@ -19,20 +19,21 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Runtime, State};
 use tracing::info;
 
-struct ResolvedAssistantModel {
-    provider_name: String,
-    provider: LLMProvider,
-    model_name: String,
-    api_key: String,
-    ollama_endpoint: Option<String>,
-    custom_openai_endpoint: Option<String>,
-    custom_openai_max_tokens: Option<u32>,
-    custom_openai_temperature: Option<f32>,
-    custom_openai_top_p: Option<f32>,
-    app_data_dir: PathBuf,
+pub(crate) struct ResolvedAssistantModel {
+    pub(crate) provider_name: String,
+    pub(crate) provider: LLMProvider,
+    pub(crate) model_name: String,
+    pub(crate) api_key: String,
+    pub(crate) ollama_endpoint: Option<String>,
+    pub(crate) custom_openai_endpoint: Option<String>,
+    pub(crate) custom_openai_max_tokens: Option<u32>,
+    pub(crate) custom_openai_temperature: Option<f32>,
+    pub(crate) custom_openai_top_p: Option<f32>,
+    pub(crate) app_data_dir: PathBuf,
+    pub(crate) claude_cli_path: Option<String>,
 }
 
-async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantModel, String> {
+pub(crate) async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantModel, String> {
     let config = SettingsRepository::get_model_config(pool)
         .await
         .map_err(|e| format!("Failed to load model config: {}", e))?
@@ -42,7 +43,7 @@ async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantM
     let provider = LLMProvider::from_str(&provider_name)?;
     let api_key = if matches!(
         provider,
-        LLMProvider::Ollama | LLMProvider::BuiltInAI | LLMProvider::CustomOpenAI
+        LLMProvider::Ollama | LLMProvider::BuiltInAI | LLMProvider::CustomOpenAI | LLMProvider::ClaudeCli
     ) {
         String::new()
     } else {
@@ -84,6 +85,14 @@ async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantM
         None => (None, None, None, None, None),
     };
 
+    let claude_cli_path = if provider == LLMProvider::ClaudeCli {
+        SettingsRepository::get_claude_cli_path(pool)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        None
+    };
+
     Ok(ResolvedAssistantModel {
         provider_name,
         provider,
@@ -95,10 +104,11 @@ async fn resolve_assistant_model(pool: &SqlitePool) -> Result<ResolvedAssistantM
         custom_openai_temperature,
         custom_openai_top_p,
         app_data_dir: crate::paths::install_data_root(),
+        claude_cli_path,
     })
 }
 
-async fn generate_assistant_answer(
+pub(crate) async fn generate_assistant_answer(
     model: &ResolvedAssistantModel,
     system_prompt: &str,
     user_prompt: &str,
@@ -121,6 +131,7 @@ async fn generate_assistant_answer(
             .or(Some(default_temperature)),
         model.custom_openai_top_p,
         Some(&model.app_data_dir),
+        model.claude_cli_path.as_deref(),
         None,
         hide,
     )

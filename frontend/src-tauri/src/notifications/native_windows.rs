@@ -1,4 +1,4 @@
-//! Native Windows toast notifications shown as "Talkkeeper"
+//! Native Windows toast notifications shown as "Konspekt"
 //! (with our icon) instead of "Windows PowerShell".
 //!
 //! ## Why this module exists
@@ -33,10 +33,10 @@ use std::sync::Once;
 
 /// Stable AppUserModelID for this app. This must match `tauri.conf.json`'s
 /// identifier and the AUMID written to installer-created shortcuts.
-pub const APP_USER_MODEL_ID: &str = "com.meetily.ai";
+pub const APP_USER_MODEL_ID: &str = "ru.konspekt.app";
 
 /// Friendly name Windows shows as the toast's source.
-const DISPLAY_NAME: &str = "Talkkeeper";
+const DISPLAY_NAME: &str = "Konspekt";
 
 /// App icon embedded at compile time so `IconUri` always has a real file to
 /// point at, regardless of how the portable app was unpacked. Path is relative
@@ -108,7 +108,7 @@ fn register_aumid(icon: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Show a native toast attributed to Talkkeeper, with a **Start recording** action.
+/// Show a native toast attributed to Konspekt, with a **Start recording** action.
 /// Button (and body click) emit `start-recording-from-notification` so the UI
 /// can start capture the same way as the sidebar / in-app toast.
 pub fn show_toast<R: tauri::Runtime>(
@@ -125,7 +125,7 @@ pub fn show_toast<R: tauri::Runtime>(
     Toast::new(APP_USER_MODEL_ID)
         .title(title)
         .text1(body)
-        .text2("Tap Start recording to begin in Talkkeeper.")
+        .text2("Tap Start recording to begin in Konspekt.")
         .duration(Duration::Long)
         .add_button("Start recording", "start_recording")
         .on_activated(move |action| {

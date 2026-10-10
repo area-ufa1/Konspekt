@@ -423,7 +423,7 @@ impl SummaryService {
         };
 
         // Validate and setup api_key, Flexible for Ollama, BuiltInAI, and CustomOpenAI
-        let api_key = if provider == LLMProvider::Ollama || provider == LLMProvider::BuiltInAI || provider == LLMProvider::CustomOpenAI {
+        let api_key = if provider == LLMProvider::Ollama || provider == LLMProvider::BuiltInAI || provider == LLMProvider::CustomOpenAI || provider == LLMProvider::ClaudeCli {
             // These providers don't require API keys from the standard database column
             String::new()
         } else {
@@ -484,6 +484,13 @@ impl SummaryService {
             } else {
                 (None, None, None, None, None)
             };
+
+        // Explicit Claude Code CLI path, if the owner set one; otherwise auto-discovery
+        let claude_cli_path = if provider == LLMProvider::ClaudeCli {
+            SettingsRepository::get_claude_cli_path(&pool).await.ok().flatten()
+        } else {
+            None
+        };
 
         // For CustomOpenAI, use its API key (if any) instead of the empty string
         let final_api_key = if provider == LLMProvider::CustomOpenAI {
@@ -646,6 +653,7 @@ impl SummaryService {
             custom_openai_temperature,
             custom_openai_top_p,
             app_data_dir.as_ref(),
+            claude_cli_path.as_deref(),
             Some(&cancellation_token),
             hidden.as_ref(),
             summary_language.as_deref(),
@@ -762,7 +770,8 @@ impl SummaryService {
     async fn update_process_failed(pool: &SqlitePool, meeting_id: &str, error_msg: &str) {
         error!(
             "Processing failed for meeting_id {}: {}",
-            meeting_id, error_msg
+            meeting_id,
+            crate::claude_cli::error_for_log(error_msg)
         );
         if let Err(e) =
             SummaryProcessesRepository::update_process_failed(pool, meeting_id, error_msg).await

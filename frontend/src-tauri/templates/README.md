@@ -24,6 +24,16 @@ General-purpose meeting notes template focusing on key outcomes and actions.
 - Action Items
 - Discussion Highlights
 
+### 3. `lecture.json` (default in Konspekt)
+University lecture notes template («Лекция»). Built in and selected by default.
+
+**Sections:**
+- Кратко
+- Тезисы по порядку (with `[MM:SS]` timestamps)
+- Термины и определения
+- Формулы и примеры
+- Экзамен, ДЗ, сроки
+
 ## Template Structure
 
 Each template JSON file follows this schema:

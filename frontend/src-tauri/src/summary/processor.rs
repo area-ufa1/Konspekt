@@ -67,7 +67,7 @@ fn english_markdown_after_normalization_result(
         Err(e) => {
             error!(
                 "English normalization pass failed; returning pass-1 markdown without hard fail: {}",
-                e
+                crate::claude_cli::error_for_log(&e)
             );
             Ok(original_markdown.to_string())
         }
@@ -323,6 +323,7 @@ pub fn extract_meeting_name_from_markdown(markdown: &str) -> Option<String> {
 /// * `temperature` - Optional temperature (CustomOpenAI provider)
 /// * `top_p` - Optional top_p (CustomOpenAI provider)
 /// * `app_data_dir` - Optional app data directory (BuiltInAI provider)
+/// * `claude_cli_path` - Optional explicit Claude Code CLI path (ClaudeCli provider)
 /// * `cancellation_token` - Optional cancellation token to stop processing
 /// * `summary_language` - Optional BCP-47 tag (e.g. "en-GB") to force summary output language
 /// * `detected_transcript_language` - Optional detected transcript language BCP-47 tag
@@ -348,6 +349,7 @@ pub async fn generate_meeting_summary(
     temperature: Option<f32>,
     top_p: Option<f32>,
     app_data_dir: Option<&PathBuf>,
+    claude_cli_path: Option<&str>,
     cancellation_token: Option<&CancellationToken>,
     hide: crate::privacy::Shield<'_>,
     summary_language: Option<&str>,
@@ -426,6 +428,7 @@ pub async fn generate_meeting_summary(
                     temperature,
                     top_p,
                     app_data_dir,
+                    claude_cli_path,
                     cancellation_token,
                     hide,
                 )
@@ -440,7 +443,12 @@ pub async fn generate_meeting_summary(
                         if e.contains("cancelled") {
                             return Err(e);
                         }
-                        error!("Failed processing chunk {}/{}: {}", i + 1, num_chunks, e);
+                        error!(
+                            "Failed processing chunk {}/{}: {}",
+                            i + 1,
+                            num_chunks,
+                            crate::claude_cli::error_for_log(&e)
+                        );
                         last_chunk_error = Some(e);
                     }
                 }
@@ -478,6 +486,7 @@ pub async fn generate_meeting_summary(
                     temperature,
                     top_p,
                     app_data_dir,
+                    claude_cli_path,
                     cancellation_token,
                     hide,
                 )
@@ -527,6 +536,7 @@ pub async fn generate_meeting_summary(
             temperature,
             top_p,
             app_data_dir,
+            claude_cli_path,
             cancellation_token,
             hide,
         )
@@ -553,6 +563,7 @@ pub async fn generate_meeting_summary(
                 temperature,
                 top_p,
                 app_data_dir,
+                claude_cli_path,
                 cancellation_token,
                 hide,
             )
@@ -581,6 +592,7 @@ pub async fn generate_meeting_summary(
                     temperature,
                     top_p,
                     app_data_dir,
+                    claude_cli_path,
                     cancellation_token,
                     hide,
                 )
@@ -611,6 +623,7 @@ async fn run_markdown_transform(
     temperature: Option<f32>,
     top_p: Option<f32>,
     app_data_dir: Option<&PathBuf>,
+    claude_cli_path: Option<&str>,
     cancellation_token: Option<&CancellationToken>,
     hide: crate::privacy::Shield<'_>,
 ) -> Result<String, String> {
@@ -633,6 +646,7 @@ async fn run_markdown_transform(
         temperature,
         top_p,
         app_data_dir,
+        claude_cli_path,
         cancellation_token,
         hide,
     )
@@ -656,6 +670,7 @@ async fn translate_markdown(
     temperature: Option<f32>,
     top_p: Option<f32>,
     app_data_dir: Option<&PathBuf>,
+    claude_cli_path: Option<&str>,
     cancellation_token: Option<&CancellationToken>,
     hide: crate::privacy::Shield<'_>,
 ) -> Result<String, String> {
@@ -680,6 +695,7 @@ async fn translate_markdown(
         temperature,
         top_p,
         app_data_dir,
+        claude_cli_path,
         cancellation_token,
         hide,
     )
@@ -699,6 +715,7 @@ async fn normalize_markdown_to_english(
     temperature: Option<f32>,
     top_p: Option<f32>,
     app_data_dir: Option<&PathBuf>,
+    claude_cli_path: Option<&str>,
     cancellation_token: Option<&CancellationToken>,
     hide: crate::privacy::Shield<'_>,
 ) -> Result<String, String> {
@@ -722,6 +739,7 @@ async fn normalize_markdown_to_english(
         temperature,
         top_p,
         app_data_dir,
+        claude_cli_path,
         cancellation_token,
         hide,
     )

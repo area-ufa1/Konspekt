@@ -41,6 +41,7 @@ fn summary_key_field(provider: &str) -> Result<Option<Field>, sqlx::Error> {
         "groq" => Ok(Some(fields::SUMMARY_KEY_GROQ)),
         "openrouter" => Ok(Some(fields::SUMMARY_KEY_OPENROUTER)),
         "builtin-ai" => Ok(None), // No API key needed
+        "claude-cli" => Ok(None),
         _ => Err(sqlx::Error::Protocol(
             format!("Invalid provider: {}", provider).into(),
         )),
@@ -392,6 +393,55 @@ impl SettingsRepository {
 
         Ok(())
     }
+
+    // ===== CLAUDE CODE CLI METHODS =====
+
+    pub async fn get_claude_cli_path(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> {
+        let stored: Option<Option<String>> =
+            sqlx::query_scalar("SELECT claudeCliPath FROM settings WHERE id = '1'")
+                .fetch_optional(pool)
+                .await?;
+        Ok(stored
+            .flatten()
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty()))
+    }
+
+    pub async fn save_claude_cli_path(pool: &SqlitePool, path: Option<&str>) -> Result<(), sqlx::Error> {
+        let path = path.map(str::trim).filter(|path| !path.is_empty());
+        sqlx::query(
+            "INSERT INTO settings (id, provider, model, whisperModel, claudeCliPath) \
+             VALUES ('1', 'claude-cli', 'sonnet', 'large-v3', ?) \
+             ON CONFLICT(id) DO UPDATE SET claudeCliPath = excluded.claudeCliPath",
+        )
+        .bind(path)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_claude_live_model(pool: &SqlitePool) -> Result<String, sqlx::Error> {
+        let stored: Option<Option<String>> =
+            sqlx::query_scalar("SELECT claudeLiveModel FROM settings WHERE id = '1'")
+                .fetch_optional(pool)
+                .await?;
+        Ok(stored
+            .flatten()
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or_else(|| crate::claude_cli::DEFAULT_LIVE_MODEL.to_string()))
+    }
+
+    pub async fn save_claude_live_model(pool: &SqlitePool, model: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO settings (id, provider, model, whisperModel, claudeLiveModel) \
+             VALUES ('1', 'claude-cli', 'sonnet', 'large-v3', ?) \
+             ON CONFLICT(id) DO UPDATE SET claudeLiveModel = excluded.claudeLiveModel",
+        )
+        .bind(model.trim())
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -456,5 +506,27 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[tokio::test]
+    async fn claude_cli_needs_no_api_key_and_keeps_its_settings() {
+        let pool = migrated_pool().await;
+        SettingsRepository::save_model_config(&pool, "claude-cli", "sonnet", "large-v3", None)
+            .await
+            .unwrap();
+        assert_eq!(SettingsRepository::get_api_key(&pool, "claude-cli").await.unwrap(), None);
+
+        assert_eq!(SettingsRepository::get_claude_cli_path(&pool).await.unwrap(), None);
+        SettingsRepository::save_claude_cli_path(&pool, Some("  C:\\tools\\claude.exe  ")).await.unwrap();
+        assert_eq!(
+            SettingsRepository::get_claude_cli_path(&pool).await.unwrap().as_deref(),
+            Some("C:\\tools\\claude.exe")
+        );
+        SettingsRepository::save_claude_cli_path(&pool, Some("   ")).await.unwrap();
+        assert_eq!(SettingsRepository::get_claude_cli_path(&pool).await.unwrap(), None);
+
+        assert_eq!(SettingsRepository::get_claude_live_model(&pool).await.unwrap(), "haiku");
+        SettingsRepository::save_claude_live_model(&pool, "sonnet").await.unwrap();
+        assert_eq!(SettingsRepository::get_claude_live_model(&pool).await.unwrap(), "sonnet");
     }
 }

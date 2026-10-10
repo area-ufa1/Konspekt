@@ -61,6 +61,12 @@ use super::working_track::{working_track_path, WorkingTrack, WORKING_SAMPLE_RATE
 mod mixer;
 use mixer::*;
 
+/// Longest live speech segment: reaching it, the segment is cut and sent to
+/// recognition without waiting for a pause.
+const LIVE_SEGMENT_CAP_MS: u32 = 15_000;
+/// Where such a cut goes: the quietest point of the segment's last 3 s.
+const LIVE_CUT_SEARCH_MS: u32 = 3_000;
+
 /// Per-source live audio level sample emitted to the frontend visualizer.
 /// One of these is sent per incoming (single-source) audio chunk, throttled
 /// to ~25 updates/sec per source so the meter animates smoothly without spam.
@@ -799,7 +805,10 @@ impl AudioPipeline {
         ) {
             Ok(processor) => {
                 info!("VAD ready for {label}: segments go straight to Whisper (no shared mix)");
-                processor
+                // A lecturer who never pauses for 800 ms (or noise that keeps
+                // the VAD hearing speech) would otherwise grow one segment
+                // with no text until it ends.
+                processor.with_live_cap(LIVE_SEGMENT_CAP_MS, LIVE_CUT_SEARCH_MS)
             }
             Err(e) => {
                 error!("Failed to create {label} VAD processor: {e}");
@@ -1018,6 +1027,12 @@ impl AudioPipeline {
                 Ok(Some(mut chunk)) => {
                     let now = std::time::Instant::now();
                     self.finalize_inactive_speech(now);
+                    // A question to the assistant: cut the speech in progress.
+                    // Not audio — it must not count as input from either source.
+                    if chunk.chunk_id == super::live_flush::LIVE_CUT_CHUNK_ID {
+                        self.cut_speech_for_question();
+                        continue;
+                    }
                     match chunk.device_type {
                         DeviceType::Microphone => self.last_mic_input = now,
                         DeviceType::System => self.last_system_input = now,
@@ -1278,6 +1293,45 @@ impl AudioPipeline {
         // laid out in recording time, which runs on across a break in capture
         // while the stored track does not.
         self.own_speech_record.observe(own_speech, far_end);
+    }
+
+    /// Cut both sources' speech in progress for a question to the assistant
+    /// and send what was said so far to recognition, then tell the question how
+    /// many segments it has to wait for. Unlike the stop flush this neither
+    /// drains the mixing buffer (padding it with silence) nor resets the VADs:
+    /// recording, the cap and silence-closing carry on as before.
+    fn cut_speech_for_question(&mut self) {
+        use super::live_flush::{FLUSH_MIN_MS, FLUSH_SEARCH_MS, PROGRESS};
+        let request = PROGRESS.requested();
+        let mic = self.mic_vad.cut_active_speech(FLUSH_SEARCH_MS, FLUSH_MIN_MS);
+        let system = self.system_vad.cut_active_speech(FLUSH_SEARCH_MS, FLUSH_MIN_MS);
+        let length_ms = |segment: &Option<SpeechSegment>| {
+            segment.as_ref().map_or(0.0, |s| s.end_timestamp_ms - s.start_timestamp_ms)
+        };
+        info!(
+            "✂️ Cut live speech for an assistant question: microphone {:.0}ms, system {:.0}ms",
+            length_ms(&mic),
+            length_ms(&system)
+        );
+        if let Some(segment) = mic {
+            let segments = self.without_the_speakers(vec![segment]);
+            Self::enqueue_source_speech(
+                segments,
+                DeviceType::Microphone,
+                &self.transcription_sender,
+                &mut self.chunk_id_counter,
+            );
+        }
+        if let Some(segment) = system {
+            Self::enqueue_source_speech(
+                vec![segment],
+                DeviceType::System,
+                &self.transcription_sender,
+                &mut self.chunk_id_counter,
+            );
+        }
+        // Segment ids run 0, 1, 2… per recording, one per segment sent.
+        PROGRESS.cut_handled(request, self.chunk_id_counter);
     }
 
     /// Microphone speech, minus whatever was only the speakers coming back.
@@ -1638,3 +1692,6 @@ mod echo_ownership_tests;
 
 #[cfg(test)]
 mod own_speech_gate_tests;
+
+#[cfg(test)]
+mod live_cut_tests;
