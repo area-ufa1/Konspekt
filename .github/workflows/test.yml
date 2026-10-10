@@ -56,5 +56,5 @@ jobs:
         shell: cmd
         env:
           CARGO_BUILD_JOBS: 2
-        # на раннере нет аудиоустройства вывода
-        run: scripts\dev-shell-test.cmd -- --skip audio::playback_monitor::tests::test_get_output_device
+        # на раннере нет звуковых устройств: эти тесты Talkkeeper падают без них
+        run: scripts\dev-shell-test.cmd -- --skip audio::playback_monitor::tests::test_get_output_device --skip audio::system_audio_commands::tests::test_list_system_audio_devices
