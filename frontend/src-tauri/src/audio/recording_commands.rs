@@ -127,6 +127,26 @@ pub fn recorded_seconds() -> Option<f64> {
         .map(|seconds| seconds.max(0.0))
 }
 
+/// Before a question to the assistant: ask the running recording's pipeline to
+/// cut its speech in progress (see `live_flush`). `false` when there is no
+/// recording with live text to cut, or it is stopping.
+pub fn request_live_cut() -> bool {
+    if !recording_live_transcription() || IS_STOPPING.load(Ordering::SeqCst) {
+        return false;
+    }
+    // Not waited for: a device reconnect holds this lock for seconds, and the
+    // question must not hang on it — it goes without the cut instead.
+    let manager = match RECORDING_MANAGER.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            info!("Assistant question: recording manager busy, live speech not cut");
+            return false;
+        }
+    };
+    manager.as_ref().is_some_and(|manager| manager.request_live_cut())
+}
+
 /// Rechecked by the minibar lifecycle after acquiring its own serialization
 /// lock. The minimize callback may have observed recording=true before native
 /// shutdown claimed IS_STOPPING.

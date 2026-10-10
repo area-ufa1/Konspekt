@@ -36,6 +36,8 @@ pub mod pipeline;
 pub mod stream;
 pub mod recording_manager;
 pub mod recording_commands;
+// Cutting live speech before a question to the assistant, and waiting for its text.
+pub mod live_flush;
 pub mod source_watch;
 pub mod recording_preferences;
 pub mod recording_protocol;

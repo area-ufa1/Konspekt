@@ -28,6 +28,36 @@ pub struct ContinuousVadProcessor {
     speech_start_sample: usize,
     // State tracking for smart logging
     last_logged_state: bool,
+    /// The last [`RECENT_SAMPLES`] of audio, ending at the chunk being
+    /// processed. Speech starts are reported up to ~0.6 s after the fact (the
+    /// pre-speech pad plus the minimum speech time); this is where the
+    /// utterance's first samples are taken from so that `current_speech`
+    /// begins exactly at `speech_start_sample`.
+    recent: VecDeque<f32>,
+    /// Live capture only: cut an utterance that reaches `max` samples at the
+    /// quietest point of its last `search` samples. `None` for offline passes.
+    live_cap: Option<LiveCap>,
+    /// The utterance in progress was cut at least once, so `speech_start_sample`
+    /// is later than where Silero thinks it started.
+    cut_since_start: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LiveCap {
+    max_samples: usize,
+    search_samples: usize,
+}
+
+/// How much audio `recent` keeps: comfortably more than the 300 ms pre-speech
+/// pad plus the 250 ms minimum speech time by which a start is reported late.
+const RECENT_SAMPLES: usize = 16_000;
+
+fn ms_to_samples(ms: u32) -> usize {
+    ms as usize * 16
+}
+
+fn samples_to_ms(samples: usize) -> f64 {
+    (samples as f64 / 16000.0) * 1000.0
 }
 
 impl ContinuousVadProcessor {
@@ -46,9 +76,10 @@ impl ContinuousVadProcessor {
         if !self.in_speech || self.current_speech.is_empty() {
             return None;
         }
-        let start_ms = (self.speech_start_sample as f64 / 16000.0) * 1000.0;
-        let end_ms = (self.processed_samples as f64 / 16000.0) * 1000.0;
+        let start_ms = samples_to_ms(self.speech_start_sample);
+        let end_ms = samples_to_ms(self.processed_samples);
         self.in_speech = false;
+        self.cut_since_start = false;
         self.last_logged_state = false;
         // Silero's reset intentionally retains session_audio. Recreate the
         // session so repeated callback-silence finalizations stay O(utterance)
@@ -93,8 +124,65 @@ impl ContinuousVadProcessor {
         }
         self.buffer.clear();
         self.current_speech.clear();
+        // Its positions belong to the timeline before the jump.
+        self.recent.clear();
         self.processed_samples = target_sample;
         self.session_start_sample = target_sample;
+    }
+
+    /// Live capture: an utterance never grows past `max_ms`. When it gets
+    /// there it is cut at the quietest point of its last `search_ms` — the gap
+    /// between two words, as far as level can tell — and the rest carries on
+    /// as the next utterance. Offline passes split long speech their own way
+    /// and do not set this.
+    pub fn with_live_cap(mut self, max_ms: u32, search_ms: u32) -> Self {
+        self.live_cap = Some(LiveCap {
+            max_samples: ms_to_samples(max_ms),
+            search_samples: ms_to_samples(search_ms).min(ms_to_samples(max_ms)),
+        });
+        self
+    }
+
+    /// Cut the utterance in progress now, at the quietest point of its last
+    /// `search_ms`, and hand over everything before the cut. The VAD keeps
+    /// hearing the speech: what follows the cut continues as the next
+    /// utterance, ended by silence or the cap as usual, with no sample lost or
+    /// repeated. Nothing is cut while there is no speech or it is shorter than
+    /// `min_ms`, nor by a processor without [`Self::with_live_cap`].
+    pub fn cut_active_speech(&mut self, search_ms: u32, min_ms: u32) -> Option<SpeechSegment> {
+        if self.live_cap.is_none()
+            || !self.in_speech
+            || self.current_speech.len() < ms_to_samples(min_ms).max(1)
+        {
+            return None;
+        }
+        self.cut_at_quietest(ms_to_samples(search_ms))
+    }
+
+    /// `current_speech` covers `[speech_start_sample, processed_samples)`; cut
+    /// it in its last `search` samples and keep the remainder in progress.
+    fn cut_at_quietest(&mut self, search: usize) -> Option<SpeechSegment> {
+        let len = self.current_speech.len();
+        let cut = quietest_cut(&self.current_speech, len.saturating_sub(search));
+        if cut == 0 {
+            return None;
+        }
+        let rest = self.current_speech.split_off(cut);
+        let piece = std::mem::replace(&mut self.current_speech, rest);
+        let start = self.speech_start_sample;
+        self.speech_start_sample += cut;
+        self.cut_since_start = true;
+        debug!(
+            "VAD: cut utterance in progress at {:.0}ms after {:.0}ms",
+            samples_to_ms(self.speech_start_sample),
+            samples_to_ms(cut)
+        );
+        Some(SpeechSegment {
+            samples: piece,
+            start_timestamp_ms: samples_to_ms(start),
+            end_timestamp_ms: samples_to_ms(start + cut),
+            confidence: 0.9,
+        })
     }
 
     pub fn new(input_sample_rate: u32, redemption_time_ms: u32) -> Result<Self> {
@@ -159,6 +247,9 @@ impl ContinuousVadProcessor {
             speech_start_sample: 0,
             // Initialize state tracking
             last_logged_state: false,
+            recent: VecDeque::with_capacity(RECENT_SAMPLES + vad_chunk_size),
+            live_cap: None,
+            cut_since_start: false,
         })
     }
 
@@ -279,6 +370,7 @@ impl ContinuousVadProcessor {
             self.speech_segments.push_back(segment);
             self.current_speech.clear();
             self.in_speech = false;
+            self.cut_since_start = false;
         }
 
         // Extract all remaining segments
@@ -298,6 +390,16 @@ impl ContinuousVadProcessor {
                   current_speech_size, current_speech_size as f64 / 16000.0);
         }
 
+        // Remember this chunk before Silero answers: a speech start it reports
+        // now lies up to ~0.6 s back, and its audio is taken from here.
+        if self.live_cap.is_some() {
+            self.recent.extend(chunk.iter().copied());
+            let excess = self.recent.len().saturating_sub(RECENT_SAMPLES);
+            self.recent.drain(..excess);
+        }
+        let chunk_end = self.processed_samples + chunk.len();
+        let mut seeded = false;
+
         let transitions = self.session.process(chunk)
             .map_err(|e| anyhow!("VAD processing failed: {}", e))?;
 
@@ -316,12 +418,26 @@ impl ContinuousVadProcessor {
                         self.last_logged_state = true;
                     }
                     self.in_speech = true;
+                    self.cut_since_start = false;
                     // Use 16000 (VAD processing rate) since processed_samples counts 16kHz samples
-                    self.speech_start_sample =
-                        self.session_start_sample + (timestamp_ms * 16000 / 1000);
+                    let reported = self.session_start_sample + (timestamp_ms * 16000 / 1000);
                     self.current_speech.clear();
+                    if self.live_cap.is_some() {
+                        // Live: `current_speech` starts exactly at
+                        // `speech_start_sample` (cuts rely on it), its first
+                        // samples, this chunk included, taken from `recent`.
+                        // Offline passes keep their old behaviour.
+                        let recent_start = chunk_end - self.recent.len();
+                        self.speech_start_sample = reported.clamp(recent_start, chunk_end);
+                        self.current_speech
+                            .extend(self.recent.range(self.speech_start_sample - recent_start..));
+                        seeded = true;
+                    } else {
+                        self.speech_start_sample = reported;
+                    }
                 }
                 VadTransition::SpeechEnd { start_timestamp_ms, end_timestamp_ms, samples } => {
+                    let utterance_start = self.session_start_sample + start_timestamp_ms * 16;
                     let session_offset_ms = self.session_start_sample * 1000 / 16000;
                     let start_timestamp_ms = start_timestamp_ms + session_offset_ms;
                     let end_timestamp_ms = end_timestamp_ms + session_offset_ms;
@@ -333,22 +449,31 @@ impl ContinuousVadProcessor {
                     self.in_speech = false;
 
                     // Use samples from VAD transition if available, otherwise use accumulated samples
-                    let speech_samples = if !samples.is_empty() {
-                        samples
+                    let (speech_samples, start_ms, end_ms) = if samples.is_empty() {
+                        (self.current_speech.clone(), start_timestamp_ms as f64, end_timestamp_ms as f64)
+                    } else if self.cut_since_start {
+                        // Silero returns the whole utterance; what came before
+                        // the last cut has already been handed over.
+                        let already = self.speech_start_sample.saturating_sub(utterance_start);
+                        let rest = samples.get(already..).map(<[f32]>::to_vec).unwrap_or_default();
+                        let start = self.speech_start_sample;
+                        let end = start + rest.len();
+                        (rest, samples_to_ms(start), samples_to_ms(end))
                     } else {
-                        self.current_speech.clone()
+                        (samples, start_timestamp_ms as f64, end_timestamp_ms as f64)
                     };
+                    self.cut_since_start = false;
 
                     if !speech_samples.is_empty() {
                         let segment = SpeechSegment {
                             samples: speech_samples,
-                            start_timestamp_ms: start_timestamp_ms as f64,
-                            end_timestamp_ms: end_timestamp_ms as f64,
+                            start_timestamp_ms: start_ms,
+                            end_timestamp_ms: end_ms,
                             confidence: 0.9, // VAD confidence
                         };
 
                         info!("VAD: Completed speech segment: {:.1}ms duration, {} samples",
-                              end_timestamp_ms - start_timestamp_ms, segment.samples.len());
+                              end_ms - start_ms, segment.samples.len());
 
                         self.speech_segments.push_back(segment);
                     }
@@ -359,13 +484,51 @@ impl ContinuousVadProcessor {
         }
 
         // Accumulate speech if we're currently in a speech state
-        if self.in_speech {
+        if self.in_speech && !seeded {
             self.current_speech.extend_from_slice(chunk);
         }
 
         self.processed_samples += chunk.len();
+
+        if let Some(cap) = self.live_cap {
+            if self.in_speech && self.current_speech.len() >= cap.max_samples {
+                if let Some(segment) = self.cut_at_quietest(cap.search_samples) {
+                    info!(
+                        "VAD: Utterance reached the {:.0}ms cap: cut a {:.0}ms segment",
+                        samples_to_ms(cap.max_samples),
+                        segment.end_timestamp_ms - segment.start_timestamp_ms
+                    );
+                    self.speech_segments.push_back(segment);
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// Where to cut `samples` so no word is split, looking only at
+/// `samples[search_from..]`: the middle of its quietest 30 ms window (lowest
+/// RMS, stepped every 10 ms; the later one on a tie). A stretch too short for
+/// one window is cut at its end. Always in `1..=samples.len()` for non-empty
+/// input.
+pub fn quietest_cut(samples: &[f32], search_from: usize) -> usize {
+    const WINDOW: usize = 480;
+    const HOP: usize = 160;
+    let from = search_from.min(samples.len());
+    let region = &samples[from..];
+    if region.len() < WINDOW {
+        return samples.len();
+    }
+    let mut best = (f32::MAX, samples.len());
+    let mut at = 0;
+    while at + WINDOW <= region.len() {
+        let energy: f32 = region[at..at + WINDOW].iter().map(|s| s * s).sum();
+        if energy <= best.0 {
+            best = (energy, from + at + WINDOW / 2);
+        }
+        at += HOP;
+    }
+    best.1.max(1)
 }
 
 /// Legacy function for backward compatibility - now uses the optimized approach
@@ -747,6 +910,175 @@ mod tests {
 
         assert!(segment.start_timestamp_ms >= 10_000.0);
         assert!(segment.end_timestamp_ms > segment.start_timestamp_ms);
+    }
+
+    /// The speech-like signal of `generate_test_audio_with_speech`, without its
+    /// pauses, at sample `i` of a 16 kHz stream. Silero hears its first seconds
+    /// as speech but not what follows, so they repeat every 5 s.
+    fn speech_like(i: usize) -> f32 {
+        let time = (i % 80_000) as f32 / 16000.0;
+        let freq1 = 200.0 + (time * 50.0).sin() * 100.0;
+        let amplitude = 0.3 + 0.1 * (time * 5.0).sin();
+        amplitude
+            * (0.5 * (2.0 * std::f32::consts::PI * freq1 * time).sin()
+                + 0.3 * (2.0 * std::f32::consts::PI * freq1 * 2.0 * time).sin()
+                + 0.2 * (2.0 * std::f32::consts::PI * freq1 * 3.0 * time).sin())
+    }
+
+    /// Talk without a pause long enough to end the utterance; between `dip`
+    /// seconds the voice drops to almost nothing, as between two words.
+    fn talk_with_dip(seconds: f32, dip: (f32, f32)) -> Vec<f32> {
+        (0..(seconds * 16000.0) as usize)
+            .map(|i| {
+                let time = i as f32 / 16000.0;
+                let s = speech_like(i);
+                if time >= dip.0 && time < dip.1 { s * 0.01 } else { s }
+            })
+            .collect()
+    }
+
+    /// The live microphone VAD's settings, as an offline pass would use them.
+    fn offline_processor() -> ContinuousVadProcessor {
+        ContinuousVadProcessor::new_with_thresholds(16000, 800, 0.20, 0.10)
+            .expect("Failed to create processor")
+    }
+
+    /// The live microphone VAD, as the pipeline builds it.
+    fn live_processor() -> ContinuousVadProcessor {
+        offline_processor().with_live_cap(15_000, 3_000)
+    }
+
+    /// Feed like the live pipeline does — 100 ms at a time — and collect.
+    fn feed(processor: &mut ContinuousVadProcessor, audio: &[f32]) -> Vec<SpeechSegment> {
+        let mut segments = Vec::new();
+        for block in audio.chunks(1600) {
+            segments.extend(processor.process_audio(block).expect("VAD failed"));
+        }
+        segments
+    }
+
+    /// Consecutive pieces tile the stream: each starts where the previous one
+    /// ended, and their samples are exactly the stream's over that span.
+    fn assert_tiles(segments: &[SpeechSegment], stream: &[f32]) {
+        let first = (segments[0].start_timestamp_ms * 16.0).round() as usize;
+        let mut at = first;
+        for (i, segment) in segments.iter().enumerate() {
+            let start = (segment.start_timestamp_ms * 16.0).round() as usize;
+            assert_eq!(start, at, "piece {i} starts where piece {} ended", i.max(1) - 1);
+            let end = start + segment.samples.len();
+            assert_eq!(
+                (segment.end_timestamp_ms * 16.0).round() as usize,
+                end,
+                "piece {i}: end time matches its samples"
+            );
+            assert!(
+                segment.samples == stream[start..end],
+                "piece {i}: samples are the stream's own, none lost or repeated"
+            );
+            at = end;
+        }
+    }
+
+    #[test]
+    fn quietest_cut_lands_in_the_quiet_gap_after_search_start() {
+        // 3 s of voice with a 100 ms near-silence at 2.2 s and another at 0.5 s.
+        let mut samples: Vec<f32> = (0..48000).map(speech_like).collect();
+        for gap in [(8000, 9600), (35200, 36800)] {
+            for s in &mut samples[gap.0..gap.1] {
+                *s *= 0.01;
+            }
+        }
+        let cut = quietest_cut(&samples, 16000);
+        assert!((35200..=36800).contains(&cut), "cut at {cut} is in the gap at 2.2 s");
+        let cut = quietest_cut(&samples, 0);
+        assert!(
+            (8000..=9600).contains(&cut) || (35200..=36800).contains(&cut),
+            "cut at {cut} is in one of the gaps"
+        );
+        assert!(cut > 0 && cut <= samples.len());
+    }
+
+    #[test]
+    fn live_cap_cuts_long_talk_in_its_quiet_dip_without_losing_audio() {
+        let talk = talk_with_dip(24.0, (13.6, 13.9));
+        let mut stream = talk.clone();
+        stream.extend(std::iter::repeat(0.0).take(32000)); // 2 s of silence closes it
+
+        // Without the cap (offline passes) the same talk is one long piece.
+        let mut uncapped = offline_processor();
+        let mut whole = feed(&mut uncapped, &stream);
+        whole.extend(uncapped.flush().unwrap());
+        assert_eq!(whole.len(), 1, "the synthetic talk is one utterance to the VAD");
+        assert!(whole[0].end_timestamp_ms - whole[0].start_timestamp_ms > 20_000.0);
+
+        let mut capped = live_processor();
+        let mut pieces = feed(&mut capped, &stream);
+        pieces.extend(capped.flush().unwrap());
+        assert!(pieces.len() >= 2, "a 24 s utterance is cut: {} piece(s)", pieces.len());
+        let first = &pieces[0];
+        let first_ms = first.end_timestamp_ms - first.start_timestamp_ms;
+        assert!(first_ms <= 15_030.0, "first piece is at most 15 s: {first_ms} ms");
+        assert!(
+            (13_600.0..=13_900.0).contains(&first.end_timestamp_ms),
+            "cut lands in the dip: {} ms",
+            first.end_timestamp_ms
+        );
+        for piece in &pieces {
+            let ms = piece.end_timestamp_ms - piece.start_timestamp_ms;
+            assert!(ms <= 15_030.0, "every piece is capped: {ms} ms");
+        }
+        assert_tiles(&pieces, &stream);
+        assert!(
+            pieces.last().unwrap().end_timestamp_ms >= 23_900.0,
+            "the talk is covered to its end"
+        );
+    }
+
+    #[test]
+    fn cut_on_demand_closes_the_utterance_and_the_rest_follows_it() {
+        let mut processor = live_processor();
+        assert!(processor.cut_active_speech(600, 1000).is_none(), "nothing to cut before speech");
+
+        let stream: Vec<f32> = (0..16000 * 9)
+            .map(|i| if i < 16000 * 7 { speech_like(i) } else { 0.0 })
+            .collect();
+        let before = feed(&mut processor, &stream[..16000 * 5]);
+        assert!(before.is_empty(), "5 s of talk is still in progress");
+
+        // Offline passes have no cuts.
+        let mut offline = offline_processor();
+        feed(&mut offline, &stream[..16000 * 5]);
+        assert!(offline.has_active_speech());
+        assert!(offline.cut_active_speech(600, 1000).is_none(), "only live processors cut");
+
+        let piece = processor.cut_active_speech(600, 1000).expect("talk in progress is cut");
+        assert!(
+            piece.end_timestamp_ms >= 5_000.0 - 630.0 && piece.end_timestamp_ms <= 5_000.0,
+            "cut within the last 600 ms: {} ms",
+            piece.end_timestamp_ms
+        );
+        assert!(processor.has_active_speech(), "the VAD still hears the talk going on");
+
+        let mut pieces = vec![piece];
+        pieces.extend(feed(&mut processor, &stream[16000 * 5..]));
+        pieces.extend(processor.flush().unwrap());
+        assert!(pieces.len() >= 2, "the rest of the talk follows the cut");
+        assert_tiles(&pieces, &stream);
+        assert!(pieces.last().unwrap().end_timestamp_ms >= 6_900.0);
+    }
+
+    #[test]
+    fn cut_on_demand_leaves_a_too_short_utterance_alone() {
+        let mut processor = live_processor();
+        let talk: Vec<f32> = (0..16000).map(speech_like).collect();
+        feed(&mut processor, &talk);
+        if processor.has_active_speech() {
+            assert!(
+                processor.cut_active_speech(600, 5_000).is_none(),
+                "under the minimum: nothing is cut"
+            );
+            assert!(processor.has_active_speech());
+        }
     }
 
     #[test]

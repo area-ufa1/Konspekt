@@ -97,8 +97,6 @@ pub async fn assistant_ask<R: Runtime>(
         return Err("Пустой вопрос".into());
     }
     let asked_at = crate::audio::recording_commands::recorded_seconds().unwrap_or(0.0);
-    let lines = crate::audio::recording_commands::get_transcript_history().await.unwrap_or_default();
-    let notes = crate::audio::transcript_journal::current_notes();
     let pool = state.db_manager.pool();
     let provider = SettingsRepository::get_model_config(pool)
         .await
@@ -106,6 +104,17 @@ pub async fn assistant_ask<R: Runtime>(
         .flatten()
         .map(|config| config.provider)
         .unwrap_or_default();
+    if provider != "claude-cli" && LLMProvider::from_str(&provider) != Ok(LLMProvider::Claude) {
+        // Отказ сразу, без сброса живой речи и его ожидания.
+        return Err(NEEDS_CLAUDE.into());
+    }
+    let lines = after_flush(
+        crate::audio::live_flush::flush_before_question(),
+        crate::audio::recording_commands::get_transcript_history(),
+    )
+    .await
+    .unwrap_or_default();
+    let notes = crate::audio::transcript_journal::current_notes();
 
     let emit = |text: &str, done: bool| {
         let _ = app.emit("assistant-answer", AnswerEvent { id: &id, text, done });
@@ -154,6 +163,21 @@ pub async fn assistant_ask<R: Runtime>(
     Ok(turn)
 }
 
+/// Строки для вопроса читаются только после сброса живой речи: иначе ответ
+/// строится по тексту до последней паузы лектора. Сброс сам ограничен по
+/// времени (`live_flush::FLUSH_BUDGET`); в лог — только исход и время.
+pub(crate) async fn after_flush<T>(
+    flush: impl std::future::Future<Output = crate::audio::live_flush::FlushOutcome>,
+    read: impl std::future::Future<Output = T>,
+) -> T {
+    let started = std::time::Instant::now();
+    let outcome = flush.await;
+    if outcome != crate::audio::live_flush::FlushOutcome::Skipped {
+        log::info!("Ассистент: сброс живой речи перед вопросом — {:?} за {} мс", outcome, started.elapsed().as_millis());
+    }
+    read.await
+}
+
 /// Журналирует ход и отдаёт его вызывающему. Сбой журнала (записи нет, архив
 /// заперт, диск) не отменяет ответ — он уже показан; теряется только его
 /// сохранение, в лог — предупреждение. Второе значение — текст предупреждения.
@@ -187,6 +211,49 @@ mod tests {
             model: "haiku".into(),
             created_at: "2026-10-10T09:00:00Z".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn the_question_reads_lines_only_after_the_flush() {
+        use crate::audio::live_flush::FlushOutcome;
+        use std::sync::{Arc, Mutex};
+        // Сброс «доставляет» строку разрезанной фразы через 100 мс.
+        let history = Arc::new(Mutex::new(vec!["старая".to_string()]));
+        let flush = {
+            let history = history.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                history.lock().unwrap().push("только что сказанное".into());
+                FlushOutcome::Delivered
+            }
+        };
+        let read = {
+            let history = history.clone();
+            async move { history.lock().unwrap().clone() }
+        };
+        let lines = after_flush(flush, read).await;
+        assert_eq!(lines, vec!["старая".to_string(), "только что сказанное".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_stuck_flush_does_not_hold_the_question() {
+        use crate::audio::live_flush::{flush_within, FlushOutcome, LiveProgress};
+        // Конвейер не отвечает вовсе: вопрос уходит по истечении бюджета с тем, что есть.
+        let progress = LiveProgress::default();
+        let started = std::time::Instant::now();
+        let flushed = std::cell::Cell::new(None);
+        let lines = after_flush(
+            async {
+                let outcome = flush_within(&progress, || true, std::time::Duration::from_millis(300)).await;
+                flushed.set(Some(outcome));
+                outcome
+            },
+            async { vec!["есть".to_string()] },
+        )
+        .await;
+        assert_eq!(flushed.get(), Some(FlushOutcome::TimedOut), "сброс был запрошен и упёрся в бюджет");
+        assert_eq!(lines, vec!["есть".to_string()]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
     }
 
     #[test]
