@@ -9,7 +9,7 @@
     },
     {
       "title": "Тезисы по порядку",
-      "instruction": "List the main points in the same order in which the lecturer presented them. Keep the lecturer's own terminology. End every item with the recording timestamp in the form [MM:SS] taken from the transcript line where the point starts. Do not invent or reorder points",
+      "instruction": "List the main points in the same order in which the lecturer presented them. Keep the lecturer's own terminology. Start every item with the recording timestamp in the form [MM:SS] taken from the transcript line where the point starts. Do not invent or reorder points",
       "format": "list",
       "item_format": "[MM:SS] main point"
     },

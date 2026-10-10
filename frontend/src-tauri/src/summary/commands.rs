@@ -348,7 +348,7 @@ pub async fn api_process_transcript<R: Runtime>(
 
     let pool = state.db_manager.pool().clone();
     let final_prompt = custom_prompt.unwrap_or_else(|| "".to_string());
-    let final_template_id = template_id.unwrap_or_else(|| "daily_standup".to_string());
+    let final_template_id = template_id.unwrap_or_else(|| crate::summary::templates::DEFAULT_TEMPLATE_ID.to_string());
     let process_id = Uuid::new_v4().to_string();
     let registration = SummaryService::try_register_cancellation_token(&m_id)
         .ok_or_else(|| "Summary generation is already active for this meeting".to_string())?;

@@ -45,6 +45,7 @@ pub use loader::{
     delete_custom_template, get_template, is_custom_template, list_template_ids, list_templates,
     save_custom_template, set_bundled_templates_dir, validate_and_parse_template,
 };
+pub use defaults::DEFAULT_TEMPLATE_ID;
 pub use types::{Template, TemplateSection};
 
 #[cfg(test)]
