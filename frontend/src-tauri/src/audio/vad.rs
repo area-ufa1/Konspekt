@@ -40,7 +40,12 @@ pub struct ContinuousVadProcessor {
     /// The utterance in progress was cut at least once, so `speech_start_sample`
     /// is later than where Silero thinks it started.
     cut_since_start: bool,
+    /// Buffered-speech size at which the next memory warning is logged.
+    next_size_warning: usize,
 }
+
+/// ~62 s of 16 kHz audio: buffered speech this long is worth a warning.
+const LARGE_BUFFER_SAMPLES: usize = 1_000_000;
 
 #[derive(Debug, Clone, Copy)]
 struct LiveCap {
@@ -250,6 +255,7 @@ impl ContinuousVadProcessor {
             recent: VecDeque::with_capacity(RECENT_SAMPLES + vad_chunk_size),
             live_cap: None,
             cut_since_start: false,
+            next_size_warning: LARGE_BUFFER_SAMPLES,
         })
     }
 
@@ -382,12 +388,18 @@ impl ContinuousVadProcessor {
     }
 
     fn process_chunk(&mut self, chunk: &[f32]) -> Result<()> {
-        // Track accumulated speech buffer size to detect memory issues
-        let current_speech_size = self.current_speech.len();
-        if current_speech_size > 1_000_000 {
-            // More than ~62 seconds of accumulated speech at 16kHz
+        // Track accumulated speech buffer size to detect memory issues. Silero
+        // keeps its own copy of the whole utterance until it ends — the live
+        // cap bounds ours, not that one — so the larger of the two is watched,
+        // and said once per further ~62 s rather than on every chunk.
+        let silero_size = if self.in_speech { self.session.session_audio_samples() } else { 0 };
+        let current_speech_size = self.current_speech.len().max(silero_size);
+        if current_speech_size < LARGE_BUFFER_SAMPLES {
+            self.next_size_warning = LARGE_BUFFER_SAMPLES;
+        } else if current_speech_size >= self.next_size_warning {
             warn!("VAD: Accumulated speech buffer is large: {} samples ({:.1}s) - possible memory issue",
                   current_speech_size, current_speech_size as f64 / 16000.0);
+            self.next_size_warning += LARGE_BUFFER_SAMPLES;
         }
 
         // Remember this chunk before Silero answers: a speech start it reports
@@ -1069,15 +1081,31 @@ mod tests {
 
     #[test]
     fn cut_on_demand_leaves_a_too_short_utterance_alone() {
+        use crate::audio::live_flush::{FLUSH_MIN_MS, FLUSH_SEARCH_MS};
+        let min = ms_to_samples(FLUSH_MIN_MS);
         let mut processor = live_processor();
-        let talk: Vec<f32> = (0..16000).map(speech_like).collect();
-        feed(&mut processor, &talk);
-        if processor.has_active_speech() {
-            assert!(
-                processor.cut_active_speech(600, 5_000).is_none(),
-                "under the minimum: nothing is cut"
-            );
-            assert!(processor.has_active_speech());
+        let talk: Vec<f32> = (0..16000 * 3).map(speech_like).collect();
+        let mut blocks = talk.chunks(1600);
+        // Until speech is reported there is nothing to cut.
+        while !processor.has_active_speech() {
+            let block = blocks.next().expect("the talk is heard as speech");
+            assert!(processor.process_audio(block).unwrap().is_empty());
+            assert!(processor.has_active_speech() || processor.cut_active_speech(FLUSH_SEARCH_MS, FLUSH_MIN_MS).is_none());
+        }
+        assert!(processor.current_speech.len() < min, "speech is reported before it is a second long");
+        // Under the real minimum nothing is cut and the utterance goes on; at it, it is cut.
+        loop {
+            let length = processor.current_speech.len();
+            let cut = processor.cut_active_speech(FLUSH_SEARCH_MS, FLUSH_MIN_MS);
+            if length < min {
+                assert!(cut.is_none(), "{length} samples is under the minimum: nothing is cut");
+                assert!(processor.has_active_speech(), "and the utterance goes on");
+            } else {
+                assert!(cut.is_some(), "{length} samples reaches the minimum: it is cut");
+                break;
+            }
+            let block = blocks.next().expect("the talk outlasts the minimum");
+            assert!(processor.process_audio(block).unwrap().is_empty());
         }
     }
 

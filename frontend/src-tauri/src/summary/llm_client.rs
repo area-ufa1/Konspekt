@@ -9,6 +9,10 @@ use tracing::info;
 
 const REQUEST_TIMEOUT_DURATION: Duration = Duration::from_secs(300);
 
+/// Where Claude-by-key requests go; the live assistant checks the network
+/// policy against it before waiting on anything.
+pub const CLAUDE_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+
 // Generic structure for OpenAI-compatible API chat messages
 #[derive(Debug, Serialize)]
 pub struct ChatMessage {
@@ -216,7 +220,7 @@ pub async fn generate_summary(
                     .parse()
                     .map_err(|_| "Invalid anthropic version".to_string())?,
             );
-            ("https://api.anthropic.com/v1/messages".to_string(), header_map)
+            (CLAUDE_MESSAGES_URL.to_string(), header_map)
         }
         LLMProvider::BuiltInAI => {
             // This case is handled earlier with early returns

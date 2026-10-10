@@ -104,9 +104,18 @@ pub async fn assistant_ask<R: Runtime>(
         .flatten()
         .map(|config| config.provider)
         .unwrap_or_default();
-    if provider != "claude-cli" && LLMProvider::from_str(&provider) != Ok(LLMProvider::Claude) {
-        // Отказ сразу, без сброса живой речи и его ожидания.
+    let subscription = provider == "claude-cli";
+    // Отказы, известные заранее, — сразу, без сброса живой речи и его ожидания.
+    if !subscription && LLMProvider::from_str(&provider) != Ok(LLMProvider::Claude) {
         return Err(NEEDS_CLAUDE.into());
+    }
+    if subscription {
+        if let Some(refusal) = assistant.refusal() {
+            return Err(refusal);
+        }
+    } else {
+        // Тот же отказ «Только этот компьютер», что дал бы запрос по ключу.
+        crate::network_policy::check(crate::summary::llm_client::CLAUDE_MESSAGES_URL)?;
     }
     let lines = after_flush(
         crate::audio::live_flush::flush_before_question(),
@@ -119,14 +128,15 @@ pub async fn assistant_ask<R: Runtime>(
     let emit = |text: &str, done: bool| {
         let _ = app.emit("assistant-answer", AnswerEvent { id: &id, text, done });
     };
-    let (answer, model) = if provider == "claude-cli" {
+    let (answer, model) = if subscription {
         let model = assistant.status().await.model.unwrap_or_default();
         let input = AskInput { question: &question, asked_at, lines: &lines, notes: &notes };
         let answer = assistant.ask(input, || setup_for_recording(pool), |text| emit(text, false)).await?;
         // Отложенный диалог узнаёт модель только при первом вопросе.
         let model = if model.is_empty() { assistant.status().await.model.unwrap_or_default() } else { model };
         (answer, model)
-    } else if LLMProvider::from_str(&provider) == Ok(LLMProvider::Claude) {
+    } else {
+        // Claude по ключу: остальные провайдеры отказаны выше.
         let resolved = crate::live_assistant::resolve_assistant_model(pool).await?;
         let mut cursor = super::context::Cursor::default();
         let user_prompt = super::context::next_message(&mut cursor, &lines, &notes, &question, asked_at);
@@ -141,8 +151,6 @@ pub async fn assistant_ask<R: Runtime>(
         )
         .await?;
         (crate::privacy::restore(hidden.as_ref(), &answer), resolved.model_name.clone())
-    } else {
-        return Err(NEEDS_CLAUDE.into());
     };
     emit(&answer, true);
 

@@ -259,6 +259,20 @@ impl LiveAssistant {
         }
     }
 
+    /// Отказ, который `ask` дал бы сразу, по снимку и без очереди: им вопрос
+    /// отвечают до сброса живой речи (до 4 с ожидания). `None` — решит `ask`.
+    pub fn refusal(&self) -> Option<String> {
+        let snapshot = self.snapshot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        match snapshot {
+            Snapshot::NotRecording => Some(NOT_RECORDING.into()),
+            // Диалог поднимается: что ответит `ask`, станет ясно в очереди.
+            Snapshot::Starting(_) => None,
+            Snapshot::Running { disabled: Some(reason), .. } => Some(shown(&reason)),
+            Snapshot::Running { disabled: None, .. } | Snapshot::Deferred => crate::network_policy::local_only()
+                .then(|| crate::claude_cli::LOCAL_ONLY_REFUSAL.to_string()),
+        }
+    }
+
     /// Вопрос к диалогу записи. `setup` нужен, только если диалог отложен из-за
     /// «Только этот компьютер», а режим уже выключили: тогда он поднимается сейчас.
     pub async fn ask<F, Fut>(
@@ -580,6 +594,30 @@ mod tests {
         let error = assistant.ask(input("x"), no_setup(), |_| {}).await.unwrap_err();
         assert_eq!(error, PROVIDER_CHANGED);
         assert!(error.contains("Начните запись заново"));
+    }
+
+    #[tokio::test]
+    async fn refusals_known_up_front_match_what_ask_says() {
+        // Ими вопрос отвечают до сброса живой речи — текст тот же, что дал бы `ask`.
+        let _policy = crate::network_policy::test_lock();
+        crate::network_policy::set_for_test(false);
+        let assistant = LiveAssistant::default();
+        let not_recording = assistant.ask(input("x"), no_setup(), |_| {}).await.unwrap_err();
+        assert_eq!(assistant.refusal(), Some(not_recording));
+
+        let token = assistant.begin();
+        assert_eq!(assistant.refusal(), None, "пока диалог поднимается, решает ask");
+        assistant.start(StartSetup::Unavailable("Claude Code не найден".into()), token).await;
+        assert_eq!(assistant.refusal().as_deref(), Some("Claude Code не найден"));
+        start(&assistant, StartSetup::Unavailable(String::new())).await;
+        assert_eq!(assistant.refusal().as_deref(), Some(PROVIDER_CHANGED));
+
+        start(&assistant, StartSetup::Deferred).await;
+        assert_eq!(assistant.refusal(), None, "режим выключен — вопрос поднимет диалог");
+        crate::network_policy::set_for_test(true);
+        let refused = assistant.ask(input("x"), no_setup(), |_| {}).await.unwrap_err();
+        assert_eq!(assistant.refusal(), Some(refused));
+        assistant.stop().await;
     }
 
     #[tokio::test]
