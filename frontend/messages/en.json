@@ -1626,5 +1626,20 @@
     "failed": "Failed: {message}",
     "savedTitle": "Questions to the assistant",
     "savedEmpty": "No questions were asked during this recording."
+  },
+  "hints": {
+    "tab": "Hints",
+    "question": "Question",
+    "lastQuestion": "Last question",
+    "more": "More",
+    "less": "Less",
+    "writing": "Claude is writing…",
+    "noQuestion": "The lecturer has not asked anything in the last few minutes.",
+    "failed": "Could not get an answer: {message}",
+    "close": "Close",
+    "empty": "Answers to the lecturer's questions appear here. Missed one? Press {hotkey}.",
+    "counter": "Lines checked: {checked}, hints shown: {shown}",
+    "off": "Hints are off. Turn them on in Settings → Summary → Claude Code. Takes effect from the next recording.",
+    "savedTitle": "Hints"
   }
 }

@@ -625,6 +625,7 @@ pub fn run() {
                     let service = handle.state::<HintService>();
                     service.end_recording();
                     crate::hints::hotkey::unregister_all(&handle);
+                    crate::hint_window::hide(&handle);
                     let token = service.dialog.request_stop();
                     tauri::async_runtime::spawn(async move {
                         handle.state::<HintService>().dialog.finish_stop(token).await;
@@ -689,6 +690,8 @@ pub fn run() {
             hints::commands::hints_status,
             hints::commands::hints_live,
             hints::commands::hints_current,
+            hint_window::hint_window_hide,
+            hint_window::hint_window_fit,
             assistant_turns::commands::api_get_assistant_turns,
             security::commands::security_status,
             network_policy::get_local_only_mode,
