@@ -38,6 +38,7 @@ pub mod assistant_turns;
 pub mod audio;
 pub mod claude_cli;
 pub mod claude_session;
+pub mod hints;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
