@@ -12,8 +12,10 @@ import type { HintEvent } from '@/lib/hints';
  * Карточка подсказки (вариант A макета): строка «Вопрос · 41:12 · ✕», вопрос
  * курсивом, короткий ответ крупно, «Подробнее ▾» над свёрнутым markdown.
  * `collapsible={false}` показывает подробности сразу, без переключателя.
+ * `dragHandle` — только в окне подсказки: за верхнюю строку окно тащится, а
+ * остальной текст карточки выделяется мышью.
  */
-export function HintCard({ hint, onClose, collapsible = true }: { hint: HintEvent; onClose?: () => void; collapsible?: boolean }) {
+export function HintCard({ hint, onClose, collapsible = true, dragHandle = false }: { hint: HintEvent; onClose?: () => void; collapsible?: boolean; dragHandle?: boolean }) {
   const t = useTranslations('hints');
   const [open, setOpen] = useState(false);
   useEffect(() => { setOpen(false); }, [hint.id]);
@@ -27,7 +29,12 @@ export function HintCard({ hint, onClose, collapsible = true }: { hint: HintEven
 
   return (
     <div className="grid gap-2 rounded-xl border border-[var(--af-border)] bg-[var(--af-panel)] p-3 text-[var(--af-text)] shadow-lg">
-      <div className="flex items-center gap-2 text-xs text-[var(--af-text-3)]">
+      {/* "deep" в drag.js Tauri: тянет клик по любому потомку строки (точка,
+          «Вопрос · 41:12»), а кнопка ✕ без своего атрибута прерывает обход —
+          клик по ней остаётся кликом. Голый атрибут тянул бы только за пустое
+          место самой строки, но не за текст. */}
+      <div className={`flex items-center gap-2 text-xs text-[var(--af-text-3)]${dragHandle ? ' cursor-move select-none' : ''}`}
+        data-tauri-drag-region={dragHandle ? 'deep' : undefined}>
         <span className="h-2 w-2 rounded-full bg-sky-400" />
         <span>{title}{hint.askedAtSec > 0 ? ` · ${clock(hint.askedAtSec)}` : ''}</span>
         {onClose && (
