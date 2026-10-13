@@ -23,3 +23,21 @@ pub const HOTKEY_LABEL: &str = "Запрос студента";
 pub const HOTKEY_REQUEST: &str = "Найди последний вопрос или задание преподавателя студентам за \
 последние 5 минут и ответь на него в том же формате (ВОПРОС / КОРОТКО / ПОДРОБНО), даже если \
 сомневаешься, что это вопрос. Только если вопросов не было совсем — ответь ровно: НЕТ.";
+
+/// Сочетание из настроек → то, что регистрирует плагин; ошибка — по-русски с самим текстом.
+pub fn parse_hotkey(text: &str) -> Result<tauri_plugin_global_shortcut::Shortcut, String> {
+    text.trim()
+        .parse::<tauri_plugin_global_shortcut::Shortcut>()
+        .map_err(|_| format!("Не удалось разобрать сочетание «{}». Пример: Ctrl+Shift+Space", text.trim()))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hotkeys_parse_or_explain() {
+        assert!(super::parse_hotkey("Ctrl+Shift+Space").is_ok());
+        assert!(super::parse_hotkey("ctrl+alt+h").is_ok());
+        let error = super::parse_hotkey("Ctrl+").unwrap_err();
+        assert!(error.contains("Ctrl+"), "{error}");
+    }
+}

@@ -441,6 +441,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
@@ -843,6 +844,8 @@ pub fn run() {
             claude_cli::commands::claude_cli_test_connection,
             claude_cli::commands::claude_cli_get_live_model,
             claude_cli::commands::claude_cli_save_live_model,
+            claude_cli::commands::claude_cli_get_hint_settings,
+            claude_cli::commands::claude_cli_save_hint_settings,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
             summary::summary_engine::commands::builtin_ai_get_model_info,

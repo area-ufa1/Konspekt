@@ -8,6 +8,7 @@ import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, XCircle } from 'luc
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   CLAUDE_CODE_INSTALL_URL,
@@ -16,8 +17,11 @@ import {
   getClaudeCliPath,
   getClaudeCliStatus,
   getClaudeLiveModel,
+  getHintSettings,
+  HintSettings,
   saveClaudeCliPath,
   saveClaudeLiveModel,
+  saveHintSettings,
   supportsHaiku55,
   testClaudeCliConnection,
 } from '@/lib/claude-cli';
@@ -40,6 +44,10 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
   const [path, setPath] = useState('');
   const [savedPath, setSavedPath] = useState('');
   const [liveModel, setLiveModel] = useState<string>('haiku');
+  const [hints, setHints] = useState<HintSettings | null>(null);
+  const [hotkeyDraft, setHotkeyDraft] = useState('');
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  const [localOnly, setLocalOnly] = useState(false);
   const [status, setStatus] = useState<ClaudeCliStatus | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -68,6 +76,25 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
     },
     [path, onStatusChange]
   );
+
+  useEffect(() => {
+    getHintSettings()
+      .then((loaded) => { setHints(loaded); setHotkeyDraft(loaded.hotkey); })
+      .catch(() => setHints({ enabled: false, mic: false, hotkey: 'Ctrl+Shift+Space' }));
+    invoke<boolean>('get_local_only_mode')
+      .then(setLocalOnly)
+      .catch(() => setLocalOnly(false));
+  }, []);
+
+  const persistHints = async (next: HintSettings) => {
+    setHints(next);
+    try {
+      await saveHintSettings(next);
+      setHotkeyError(null);
+    } catch (error) {
+      setHotkeyError(typeof error === 'string' ? error : (error as Error)?.message ?? '');
+    }
+  };
 
   // Один зонд при монтировании. Только чтение: ничего не сохраняем.
   useEffect(() => {
@@ -227,6 +254,36 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
           <p className="text-xs text-amber-600 mt-1">{t('haikuNeedsUpdate')}</p>
         )}
       </div>
+
+      {hints && (
+        <div className="space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <Label htmlFor="claude-hints">{t('hintsLabel')}</Label>
+              <p className="text-xs text-muted-foreground mt-1">{t('hintsHint')}</p>
+              {localOnly && <p className="text-xs text-muted-foreground mt-1">{t('hintsLocalOnly')}</p>}
+            </div>
+            <Switch id="claude-hints" checked={hints.enabled} disabled={localOnly}
+              onCheckedChange={(enabled) => void persistHints({ ...hints, enabled })} />
+          </div>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <Label htmlFor="claude-hints-mic">{t('hintsMicLabel')}</Label>
+              <p className="text-xs text-muted-foreground mt-1">{t('hintsMicHint')}</p>
+            </div>
+            <Switch id="claude-hints-mic" checked={hints.mic} disabled={localOnly || !hints.enabled}
+              onCheckedChange={(mic) => void persistHints({ ...hints, mic })} />
+          </div>
+          <div>
+            <Label htmlFor="claude-hints-hotkey">{t('hintsHotkeyLabel')}</Label>
+            <Input id="claude-hints-hotkey" value={hotkeyDraft} disabled={localOnly || !hints.enabled} className="mt-1"
+              onChange={(e) => setHotkeyDraft(e.target.value)}
+              onBlur={() => void persistHints({ ...hints, hotkey: hotkeyDraft.trim() || 'Ctrl+Shift+Space' })} />
+            <p className="text-xs text-muted-foreground mt-1">{t('hintsHotkeyHint')}</p>
+            {hotkeyError && <p className="text-xs text-red-600 mt-1">{hotkeyError}</p>}
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-2">
         <Button
