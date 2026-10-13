@@ -3,6 +3,7 @@
 
 pub mod prefilter;
 pub mod reply;
+pub mod service;
 
 /// Системный промпт диалога подсказок. Формат ответа разбирает `reply::parse`.
 pub const HINT_SYSTEM_PROMPT: &str = "Ты — суфлёр студента на паре. Тебе по частям приходит \
