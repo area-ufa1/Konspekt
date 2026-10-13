@@ -2,6 +2,7 @@
 //! строк расшифровки, второй диалог с Claude, окно поверх всех окон.
 
 pub mod commands;
+pub mod hotkey;
 pub mod prefilter;
 pub mod reply;
 pub mod service;

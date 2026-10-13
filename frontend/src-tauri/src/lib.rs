@@ -607,6 +607,14 @@ pub fn run() {
                             // Запись уже остановлена; «запускается» диалога снял request_stop.
                             return;
                         }
+                        if settings.enabled && !crate::network_policy::local_only() {
+                            // Без await после begin_recording: устаревший старт не регистрирует клавишу.
+                            let error = crate::hints::hotkey::register(&handle, &settings.hotkey).err();
+                            if let Some(error) = &error {
+                                log::warn!("Подсказки: {error}");
+                            }
+                            handle.state::<HintService>().set_hotkey_error(error);
+                        }
                         let setup = crate::hints::commands::setup_for_hints(pool, &settings).await;
                         handle.state::<HintService>().dialog.start(setup, token).await;
                     });
@@ -616,6 +624,7 @@ pub fn run() {
                     let handle = handle.clone();
                     let service = handle.state::<HintService>();
                     service.end_recording();
+                    crate::hints::hotkey::unregister_all(&handle);
                     let token = service.dialog.request_stop();
                     tauri::async_runtime::spawn(async move {
                         handle.state::<HintService>().dialog.finish_stop(token).await;
