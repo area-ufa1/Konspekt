@@ -20,6 +20,9 @@ pub struct Hint {
     pub details: String,
 }
 
+/// Разбор ответа по тексту на данный момент. `No` посреди стрима
+/// предварительный: «НЕТ» может вырасти в «Нет, это не так…», поэтому решает
+/// только итоговый полный текст; вызывающий действует по дельтам лишь для `Hint`.
 pub fn parse(text: &str) -> Reply {
     // Модель иногда оборачивает маркеры в **…**: убираем звёздочки целиком.
     let clean = text.replace("**", "");
@@ -36,17 +39,29 @@ pub fn parse(text: &str) -> Reply {
     if NO.starts_with(bare) || QUESTION.starts_with(upper.as_str()) {
         return Reply::Undecided;
     }
-    let Some(question_at) = find(&upper, QUESTION) else {
+    let markers = [QUESTION, SHORT, DETAILS];
+    if !markers.iter().any(|m| upper.contains(m)) {
         return Reply::Hint(Hint { short: trimmed.to_string(), ..Hint::default() });
-    };
+    }
+    // Недописанный маркер в последней строке не должен попасть в раздел.
+    let mut body = trimmed;
+    if let Some(nl) = trimmed.rfind('\n') {
+        let last = upper[nl + 1..].trim();
+        if !last.is_empty() && markers.iter().any(|m| m.starts_with(last)) && markers.iter().any(|m| upper[..nl].contains(m)) {
+            body = trimmed[..nl].trim_end();
+        }
+    }
+    let upper = body.to_uppercase();
+    let question_at = find(&upper, QUESTION);
     let short_at = find(&upper, SHORT);
     let details_at = find(&upper, DETAILS);
-    let question_end = short_at.or(details_at).unwrap_or(trimmed.len());
-    let question = section(trimmed, question_at + QUESTION.len(), question_end);
-    let short = short_at
-        .map(|at| section(trimmed, at + SHORT.len(), details_at.filter(|d| *d > at).unwrap_or(trimmed.len())))
+    let question = question_at
+        .map(|at| section(body, at + QUESTION.len(), short_at.or(details_at).unwrap_or(body.len())))
         .unwrap_or_default();
-    let details = details_at.map(|at| section(trimmed, at + DETAILS.len(), trimmed.len())).unwrap_or_default();
+    let short = short_at
+        .map(|at| section(body, at + SHORT.len(), details_at.filter(|d| *d > at).unwrap_or(body.len())))
+        .unwrap_or_default();
+    let details = details_at.map(|at| section(body, at + DETAILS.len(), body.len())).unwrap_or_default();
     Reply::Hint(Hint { question, short, details })
 }
 
@@ -85,11 +100,7 @@ mod tests {
 
     #[test]
     fn beginnings_are_undecided() {
-        for text in ["", "  ", "Н", "НЕ", "НЕТ", "ВОП", "ВОПРОС"] {
-            // «НЕТ» посреди стрима ещё может оказаться «НЕТ, …»: решает только конец.
-            if text == "НЕТ" {
-                continue;
-            }
+        for text in ["", "  ", "Н", "НЕ", "ВОП", "ВОПРОС"] {
             assert_eq!(parse(text), Reply::Undecided, "{text:?}");
         }
     }
@@ -113,5 +124,17 @@ mod tests {
     #[test]
     fn markers_are_case_insensitive_and_tolerate_markdown() {
         assert_eq!(parse("**Вопрос:** Как?\n**Коротко:** Так.\n**Подробно:**\nВот."), hint("Как?", "Так.", "Вот."));
+    }
+
+    #[test]
+    fn markers_without_question_are_still_split() {
+        assert_eq!(parse("КОРОТКО: За последние минуты вопросов не было."), hint("", "За последние минуты вопросов не было.", ""));
+        assert_eq!(parse("КОРОТКО: Так.\nПОДРОБНО:\nВот."), hint("", "Так.", "Вот."));
+    }
+
+    #[test]
+    fn unfinished_marker_does_not_leak() {
+        assert_eq!(parse("ВОПРОС: Что такое индекс?\nКОРО"), hint("Что такое индекс?", "", ""));
+        assert_eq!(parse("ВОПРОС: Что?\nКОРОТКО: Так.\nПОДРО"), hint("Что?", "Так.", ""));
     }
 }
