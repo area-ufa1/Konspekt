@@ -26,6 +26,7 @@ import { useRouter } from 'next/navigation';
 import { NotesEditor } from '@/components/Notes/NotesEditor';
 import { useRecordingNotes } from '@/hooks/useMeetingNotes';
 import { AssistantPanel } from '@/components/Assistant/AssistantPanel';
+import { HintsPanel } from '@/components/Hints/HintsPanel';
 
 /** Whether the notes beside a recording are open; a habit, kept per machine. */
 const NOTES_OPEN_KEY = 'recording_notes_open';
@@ -38,6 +39,7 @@ export default function Home() {
   const t = useTranslations('home');
   const tn = useTranslations('notes');
   const ta = useTranslations('assistant');
+  const th = useTranslations('hints');
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
   const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
@@ -77,16 +79,16 @@ export default function Home() {
     });
   };
   const showNotes = recordingState.isRecording && notesOpen;
-  const [sideTab, setSideTab] = useState<'notes' | 'assistant'>('notes');
+  const [sideTab, setSideTab] = useState<'notes' | 'assistant' | 'hints'>('notes');
   useEffect(() => {
     try {
       const saved = localStorage.getItem(SIDE_TAB_KEY);
-      if (saved === 'notes' || saved === 'assistant') setSideTab(saved);
+      if (saved === 'notes' || saved === 'assistant' || saved === 'hints') setSideTab(saved);
     } catch {
       // Without storage the notes tab opens first.
     }
   }, []);
-  const chooseSideTab = (tab: 'notes' | 'assistant') => {
+  const chooseSideTab = (tab: 'notes' | 'assistant' | 'hints') => {
     setSideTab(tab);
     try {
       localStorage.setItem(SIDE_TAB_KEY, tab);
@@ -292,16 +294,17 @@ export default function Home() {
             style={{ width: NOTES_WIDTH }}
           >
             <div className="flex shrink-0 gap-1 border-b border-[var(--af-border)] px-2 py-1.5">
-              {(['notes', 'assistant'] as const).map((tab) => (
+              {(['notes', 'assistant', 'hints'] as const).map((tab) => (
                 <button key={tab} type="button" onClick={() => chooseSideTab(tab)}
                   className={`rounded-md px-2.5 py-1 text-xs ${sideTab === tab ? 'bg-[var(--af-panel-2)] text-[var(--af-text)]' : 'text-[var(--af-text-3)] hover:bg-[var(--af-hover)]'}`}>
-                  {tab === 'notes' ? ta('notesTab') : ta('tab')}
+                  {tab === 'notes' ? ta('notesTab') : tab === 'assistant' ? ta('tab') : th('tab')}
                 </button>
               ))}
             </div>
             <div className="min-h-0 flex-1">
               <div className={sideTab === 'notes' ? 'h-full' : 'hidden'}><NotesEditor source={recordingNotes} live /></div>
               <div className={sideTab === 'assistant' ? 'h-full' : 'hidden'}><AssistantPanel /></div>
+              <div className={sideTab === 'hints' ? 'h-full' : 'hidden'}><HintsPanel /></div>
             </div>
           </aside>
         )}
