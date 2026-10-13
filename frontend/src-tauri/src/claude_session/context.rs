@@ -7,6 +7,10 @@ use crate::audio::recording_saver::TranscriptSegment;
 use crate::meeting_notes::Note;
 
 pub const RESTART_TAIL_SECONDS: f64 = 900.0;
+/// «Сейчас» для вопросов вроде «че там»: этот хвост уходит отдельным блоком,
+/// даже если его строки уже были в диалоге, — иначе на короткий вопрос
+/// пересказывается всё с прошлого вопроса.
+pub const NOW_SECONDS: f64 = 120.0;
 
 #[derive(Debug, Default, Clone)]
 pub struct Cursor {
@@ -59,17 +63,31 @@ fn notes_block(cursor: &mut Cursor, notes: &[Note], all: bool) -> String {
     }
 }
 
-fn compose(heading: &str, rendered: Vec<String>, notes: String, question: &str, asked_at: f64) -> String {
-    let transcript = if rendered.is_empty() {
-        "Новых реплик с прошлого вопроса нет (или транскрипт ещё пуст).".to_string()
+fn compose(intro: Option<&str>, heading: &str, earlier: Vec<String>, now: Vec<String>, notes: String, question: &str, asked_at: f64) -> String {
+    let mut parts: Vec<String> = intro.map(str::to_string).into_iter().collect();
+    if !earlier.is_empty() {
+        parts.push(format!("{heading}\n{}", earlier.join("\n")));
+    }
+    if now.is_empty() {
+        parts.push("За последние 2 минуты реплик нет (или транскрипт ещё пуст).".to_string());
     } else {
-        rendered.join("\n")
-    };
+        parts.push(format!("Сейчас — последние 2 минуты:\n{}", now.join("\n")));
+    }
     format!(
-        "{heading}\n{transcript}{notes}\n\nВопрос владельца (на {}): {}",
+        "{}{notes}\n\nВопрос владельца (на {}): {}",
+        parts.join("\n\n"),
         clock(asked_at),
         question.trim()
     )
+}
+
+/// Строки, начатые за [`NOW_SECONDS`] до вопроса.
+fn now_lines(lines: &[TranscriptSegment], asked_at: f64) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|line| line.audio_start_time >= asked_at - NOW_SECONDS && !line.text.trim().is_empty())
+        .map(render_line)
+        .collect()
 }
 
 pub fn next_message(cursor: &mut Cursor, lines: &[TranscriptSegment], notes: &[Note], question: &str, asked_at: f64) -> String {
@@ -81,24 +99,31 @@ pub fn next_message(cursor: &mut Cursor, lines: &[TranscriptSegment], notes: &[N
     if let Some(last) = fresh.iter().map(|line| line.sequence_id).max() {
         cursor.last_sequence = Some(last);
     }
-    let rendered = fresh.into_iter().map(render_line).collect();
+    let earlier = fresh
+        .into_iter()
+        .filter(|line| line.audio_start_time < asked_at - NOW_SECONDS)
+        .map(render_line)
+        .collect();
     let notes = notes_block(cursor, notes, false);
-    compose("Новое в транскрипте с прошлого вопроса:", rendered, notes, question, asked_at)
+    compose(None, "Раньше, с прошлого вопроса:", earlier, now_lines(lines, asked_at), notes, question, asked_at)
 }
 
 pub fn restart_message(cursor: &mut Cursor, lines: &[TranscriptSegment], notes: &[Note], question: &str, asked_at: f64) -> String {
     let from = asked_at - RESTART_TAIL_SECONDS;
-    let rendered = lines
+    let earlier = lines
         .iter()
-        .filter(|line| line.audio_start_time >= from && !line.text.trim().is_empty())
+        .filter(|line| line.audio_start_time >= from && line.audio_start_time < asked_at - NOW_SECONDS)
+        .filter(|line| !line.text.trim().is_empty())
         .map(render_line)
         .collect();
     cursor.last_sequence = lines.iter().map(|line| line.sequence_id).max();
     cursor.notes_sent.clear();
     let notes = notes_block(cursor, notes, true);
     compose(
-        "Диалог перезапущен после сбоя. Последние 15 минут транскрипта:",
-        rendered,
+        Some("Диалог перезапущен после сбоя: прежний разговор потерян."),
+        "Раньше, за последние 15 минут:",
+        earlier,
+        now_lines(lines, asked_at),
         notes,
         question,
         asked_at,
@@ -157,12 +182,12 @@ mod tests {
         assert_eq!(cursor.last_sequence, Some(2));
 
         let more = vec![lines[0].clone(), lines[1].clone(), line(3, 30.0, None, "без спикера")];
-        let second = next_message(&mut cursor, &more, &[note("n1", "гипотеза H0")], "А дальше?", 31.0);
+        let second = next_message(&mut cursor, &more, &[note("n1", "гипотеза H0")], "А дальше?", 200.0);
         assert!(!second.contains("Начнём с гипотез"), "старые строки не повторяются");
         assert!(second.contains("[0:30] без спикера"));
         assert!(!second.contains("гипотеза H0"), "неизменённая заметка не повторяется");
 
-        let third = next_message(&mut cursor, &more, &[note("n1", "гипотеза H1")], "Ещё?", 40.0);
+        let third = next_message(&mut cursor, &more, &[note("n1", "гипотеза H1")], "Ещё?", 210.0);
         assert!(third.contains("гипотеза H1"), "изменённая заметка уходит снова");
     }
 
@@ -170,8 +195,26 @@ mod tests {
     fn empty_delta_says_nothing_heard_yet() {
         let mut cursor = Cursor::default();
         let message = next_message(&mut cursor, &[], &[], "Что сейчас происходит?", 3.0);
-        assert!(message.contains("Новых реплик с прошлого вопроса нет"));
+        assert!(message.contains("За последние 2 минуты реплик нет"));
         assert!(message.contains("Что сейчас происходит?"));
+    }
+
+    #[test]
+    fn the_last_two_minutes_go_as_now_even_if_already_sent() {
+        let mut cursor = Cursor::default();
+        let lines = vec![
+            line(1, 10.0, Some("Speaker 1"), "давнее"),
+            line(2, 400.0, Some("Speaker 1"), "про Liquid Glass"),
+            line(3, 450.0, Some("Speaker 1"), "про Metro"),
+        ];
+        let first = next_message(&mut cursor, &lines, &[], "че там", 460.0);
+        let (earlier, now) = first.split_once("Сейчас — последние 2 минуты:").unwrap();
+        assert!(earlier.contains("давнее") && !earlier.contains("Metro"));
+        assert!(now.contains("про Liquid Glass") && now.contains("про Metro") && !now.contains("давнее"));
+
+        let again = next_message(&mut cursor, &lines, &[], "а сейчас?", 470.0);
+        assert!(!again.contains("Раньше"), "старое не повторяется");
+        assert!(again.contains("про Metro"), "«сейчас» уходит снова");
     }
 
     #[test]

@@ -63,9 +63,10 @@ use mixer::*;
 
 /// Longest live speech segment: reaching it, the segment is cut and sent to
 /// recognition without waiting for a pause.
-const LIVE_SEGMENT_CAP_MS: u32 = 15_000;
-/// Where such a cut goes: the quietest point of the segment's last 3 s.
-const LIVE_CUT_SEARCH_MS: u32 = 3_000;
+/// 15 s held a lecturer's text off the screen for up to ~20 s.
+const LIVE_SEGMENT_CAP_MS: u32 = 7_000;
+/// Where such a cut goes: the quietest point of the segment's last 2 s.
+const LIVE_CUT_SEARCH_MS: u32 = 2_000;
 
 /// Per-source live audio level sample emitted to the frontend visualizer.
 /// One of these is sent per incoming (single-source) audio chunk, throttled

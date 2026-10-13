@@ -1,6 +1,6 @@
 [package]
 name = "meetily"
-version = "0.1.0"
+version = "0.1.1"
 description = "Konspekt — запись и конспект пар с Claude"
 authors = ["TylerBuza"]
 repository = "https://github.com/area-ufa1/Konspekt"

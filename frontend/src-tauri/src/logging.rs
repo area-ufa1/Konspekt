@@ -6,12 +6,13 @@
 //! afterwards and the only evidence was whatever happened to reach the
 //! database. This tees the same records into `<data>/logs/meetily.log`.
 //!
-//! **What must never reach this file: anything a session said.** The log sits
-//! beside the archive, in the clear, and outlives the run. Log counts, lengths,
-//! ids, states and durations — never transcript or summary text. Two guards
-//! back that rule up rather than trusting it: only `Info` and louder is written
-//! by default, and every line is cut at [`MAX_LINE_CHARS`], so a stray body
-//! dump cannot quietly fill the file with somebody's words.
+//! **Recognised speech is logged on purpose.** The owner chose (13.10.2026) to
+//! keep each transcribed chunk's text in this file, so an agent debugging a
+//! session has the words next to the timings. The file sits beside the
+//! archive, in the clear, and outlives the run — treat it as private as the
+//! recordings. Summary and assistant bodies stay out: log their lengths.
+//! Two guards stay in place: only `Info` and louder is written by default, and
+//! every line is cut at [`MAX_LINE_CHARS`].
 //!
 //! stderr keeps behaving exactly as before, `RUST_LOG` included: the terminal
 //! logger is the same `env_logger` instance, and this type only adds a second

@@ -11,7 +11,7 @@ export interface AssistantTurn {
 
 export type PanelTurn = AssistantTurn & { status: 'pending' | 'done' | 'error' };
 
-export const QUICK_QUESTION_KEYS = ['quickMissed', 'quickTerm', 'quickNow'] as const;
+export const QUICK_QUESTION_KEYS = ['quickNow', 'quickAnswer', 'quickTerm'] as const;
 
 export function applyAnswerEvent(
   turns: PanelTurn[],
