@@ -4,7 +4,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 use super::manager::{AskInput, AssistantStatus, LiveAssistant, StartSetup, IDLE_TIMEOUT};
-use super::{AssistantTurn, SYSTEM_PROMPT};
+use super::{AssistantTurn, TurnKind, SYSTEM_PROMPT};
 use crate::database::repositories::setting::SettingsRepository;
 use crate::summary::llm_client::LLMProvider;
 
@@ -167,6 +167,7 @@ pub async fn assistant_ask<R: Runtime>(
         answer,
         model,
         created_at: chrono::Utc::now().to_rfc3339(),
+        kind: TurnKind::Question,
     };
     log::info!(
         "Ассистент ответил: вопрос {} симв., ответ {} симв.",
@@ -224,6 +225,7 @@ mod tests {
             answer: "Вероятность **такого же** результата при верной H0.".into(),
             model: "haiku".into(),
             created_at: "2026-10-10T09:00:00Z".into(),
+            kind: TurnKind::Question,
         }
     }
 

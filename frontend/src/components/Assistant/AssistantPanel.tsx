@@ -13,7 +13,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { MessageSquare, Send } from 'lucide-react';
 import {
-  AssistantTurn, PanelTurn, QUICK_QUESTION_KEYS, applyAnswerEvent, clock, mergeLiveTurns,
+  AssistantTurn, PanelTurn, QUICK_QUESTION_KEYS, applyAnswerEvent, clock, isQuestion, mergeLiveTurns,
 } from '@/lib/assistant';
 
 interface AssistantStatus { available: boolean; reason: string | null; model: string | null }
@@ -32,7 +32,7 @@ export function AssistantPanel() {
     let stopped = false;
     let timer: number | undefined;
     invoke<AssistantTurn[]>('assistant_live_turns')
-      .then((saved) => { if (!stopped) setTurns((local) => mergeLiveTurns(local, saved)); })
+      .then((saved) => { if (!stopped) setTurns((local) => mergeLiveTurns(local, saved.filter(isQuestion))); })
       .catch(() => {});
     // Следующий опрос — только после ответа на предыдущий, без наложения вызовов.
     const poll = async () => {

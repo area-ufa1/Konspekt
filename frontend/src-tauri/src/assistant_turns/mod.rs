@@ -5,14 +5,14 @@ pub mod commands;
 
 use sqlx::{SqliteConnection, SqlitePool};
 
-use crate::claude_session::AssistantTurn;
+use crate::claude_session::{AssistantTurn, TurnKind};
 use crate::database::fields;
 
 pub async fn store(conn: &mut SqliteConnection, meeting_id: &str, turns: &[AssistantTurn]) -> Result<(), sqlx::Error> {
     for turn in turns {
         sqlx::query(
-            "INSERT INTO assistant_turns (id, meeting_id, asked_at_sec, question, answer, model, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO assistant_turns (id, meeting_id, asked_at_sec, question, answer, model, created_at, kind) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
         )
         .bind(&turn.id)
         .bind(meeting_id)
@@ -21,6 +21,7 @@ pub async fn store(conn: &mut SqliteConnection, meeting_id: &str, turns: &[Assis
         .bind(fields::seal(fields::ASSISTANT_ANSWER, &turn.answer)?)
         .bind(&turn.model)
         .bind(&turn.created_at)
+        .bind(turn.kind.as_str())
         .execute(&mut *conn)
         .await?;
     }
@@ -28,15 +29,15 @@ pub async fn store(conn: &mut SqliteConnection, meeting_id: &str, turns: &[Assis
 }
 
 pub async fn load(pool: &SqlitePool, meeting_id: &str) -> Result<Vec<AssistantTurn>, sqlx::Error> {
-    let rows: Vec<(String, f64, String, String, String, String)> = sqlx::query_as(
-        "SELECT id, asked_at_sec, question, answer, model, created_at FROM assistant_turns \
+    let rows: Vec<(String, f64, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT id, asked_at_sec, question, answer, model, created_at, kind FROM assistant_turns \
          WHERE meeting_id = ? ORDER BY asked_at_sec, created_at",
     )
     .bind(meeting_id)
     .fetch_all(pool)
     .await?;
     rows.into_iter()
-        .map(|(id, asked_at_sec, question, answer, model, created_at)| {
+        .map(|(id, asked_at_sec, question, answer, model, created_at, kind)| {
             Ok(AssistantTurn {
                 id,
                 asked_at_sec,
@@ -44,6 +45,7 @@ pub async fn load(pool: &SqlitePool, meeting_id: &str) -> Result<Vec<AssistantTu
                 answer: fields::open(fields::ASSISTANT_ANSWER, &answer)?,
                 model,
                 created_at,
+                kind: TurnKind::from_db(&kind),
             })
         })
         .collect()
@@ -62,7 +64,21 @@ mod tests {
     }
 
     fn turn(id: &str, at: f64) -> AssistantTurn {
-        AssistantTurn { id: id.into(), asked_at_sec: at, question: format!("вопрос {id}"), answer: "ответ **жирный**".into(), model: "haiku".into(), created_at: "2026-10-10T09:00:00Z".into() }
+        AssistantTurn { id: id.into(), asked_at_sec: at, question: format!("вопрос {id}"), answer: "ответ **жирный**".into(), model: "haiku".into(), created_at: "2026-10-10T09:00:00Z".into(), kind: TurnKind::Question }
+    }
+
+    #[tokio::test]
+    async fn hints_keep_their_kind() {
+        let pool = pool_with_meeting().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let mut hint = turn("h", 50.0);
+        hint.kind = TurnKind::HintHotkey;
+        hint.answer = r#"{"short":"Так.","details":"Потому что."}"#.into();
+        store(&mut conn, "m1", &[turn("q", 10.0), hint.clone()]).await.unwrap();
+        drop(conn);
+        let loaded = load(&pool, "m1").await.unwrap();
+        assert_eq!(loaded[0].kind, TurnKind::Question);
+        assert_eq!(loaded[1], hint);
     }
 
     #[tokio::test]

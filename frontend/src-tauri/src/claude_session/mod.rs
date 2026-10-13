@@ -10,6 +10,35 @@ pub mod protocol;
 
 use serde::{Deserialize, Serialize};
 
+/// Что за ход: вопрос владельца во вкладке «Ассистент» или подсказка на вопрос
+/// преподавателя (найденная детектором или по горячей клавише).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TurnKind {
+    #[default]
+    Question,
+    Hint,
+    HintHotkey,
+}
+
+impl TurnKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TurnKind::Question => "question",
+            TurnKind::Hint => "hint",
+            TurnKind::HintHotkey => "hint-hotkey",
+        }
+    }
+
+    pub fn from_db(text: &str) -> TurnKind {
+        match text {
+            "hint" => TurnKind::Hint,
+            "hint-hotkey" => TurnKind::HintHotkey,
+            _ => TurnKind::Question,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantTurn {
@@ -19,6 +48,9 @@ pub struct AssistantTurn {
     pub answer: String,
     pub model: String,
     pub created_at: String,
+    /// Нет в журналах и экспорте до подпроекта 2 — значит, вопрос.
+    #[serde(default)]
+    pub kind: TurnKind,
 }
 
 pub const SYSTEM_PROMPT: &str = "Ты — ассистент студента на паре или созвоне. Тебе по частям приходит \
@@ -33,3 +65,17 @@ pub const SYSTEM_PROMPT: &str = "Ты — ассистент студента н
 Просьбы о длине и манере ответа действуют до конца записи.";
 
 pub const WARM_UP: &str = "Запись началась, вопросов пока нет. Ответь одним словом: готов.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn journal_lines_without_kind_are_questions() {
+        let old = r#"{"id":"t","askedAtSec":1.0,"question":"q","answer":"a","model":"haiku","createdAt":"x"}"#;
+        let turn: AssistantTurn = serde_json::from_str(old).unwrap();
+        assert_eq!(turn.kind, TurnKind::Question);
+        let hint = AssistantTurn { kind: TurnKind::HintHotkey, ..turn };
+        assert!(serde_json::to_string(&hint).unwrap().contains(r#""kind":"hint-hotkey""#));
+    }
+}

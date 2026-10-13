@@ -99,6 +99,7 @@ async fn with_schema(pool: SqlitePool) -> SqlitePool {
         include_str!("../migrations/20260905000000_add_external_stt_config.sql"),
         include_str!("../migrations/20261010000000_add_claude_cli_settings.sql"),
         include_str!("../migrations/20261010010000_add_assistant_turns.sql"),
+        include_str!("../migrations/20261013010000_add_assistant_turn_kind.sql"),
     ] {
         sqlx::raw_sql(migration).execute(&pool).await.unwrap();
     }
@@ -216,6 +217,7 @@ async fn assistant_turns_are_sealed_and_go_with_the_meeting() {
         answer: "до пятницы, сказал препод".to_string(),
         model: "haiku".to_string(),
         created_at: "2026-10-10T09:00:42Z".to_string(),
+        kind: app_lib::claude_session::TurnKind::Question,
     };
     let meeting_id = TranscriptsRepository::save_transcript(
         &pool,

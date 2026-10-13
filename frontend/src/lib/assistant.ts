@@ -1,5 +1,7 @@
 // Логика вкладки «Ассистент» без React — её проверяет node --test.
 
+export type TurnKind = 'question' | 'hint' | 'hint-hotkey';
+
 export interface AssistantTurn {
   id: string;
   askedAtSec: number;
@@ -7,6 +9,7 @@ export interface AssistantTurn {
   answer: string;
   model: string;
   createdAt: string;
+  kind?: TurnKind;
 }
 
 export type PanelTurn = AssistantTurn & { status: 'pending' | 'done' | 'error' };
@@ -29,6 +32,11 @@ export function mergeLiveTurns(local: PanelTurn[], saved: AssistantTurn[]): Pane
   const byId = new Map<string, PanelTurn>(local.map((turn) => [turn.id, turn]));
   for (const turn of saved) byId.set(turn.id, { ...turn, status: 'done' });
   return [...byId.values()].sort((a, b) => a.askedAtSec - b.askedAtSec);
+}
+
+/** Вопрос владельца, а не подсказка (у ходов до подсказок вида нет). */
+export function isQuestion(turn: { kind?: TurnKind }): boolean {
+  return !turn.kind || turn.kind === 'question';
 }
 
 export function clock(seconds: number): string {
