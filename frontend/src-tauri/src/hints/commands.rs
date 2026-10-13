@@ -77,7 +77,13 @@ async fn process<R: Runtime>(app: &AppHandle<R>, request: Request) {
             if !service.is_active() {
                 return;
             }
-            crate::hint_window::show(app);
+            // Кандидат, оказавшийся «НЕТ», окно не открывает (иначе мелькнёт
+            // прошлая карточка); событие всё равно уходит — окно по нему прячется.
+            let rejected_candidate =
+                event.state == super::service::HintState::Empty && !matches!(event.kind, TurnKind::HintHotkey);
+            if !rejected_candidate {
+                crate::hint_window::show(app);
+            }
             let _ = app.emit("hint-update", event);
         })
         .await;

@@ -47,7 +47,7 @@ export function HintCard({ hint, onClose, collapsible = true }: { hint: HintEven
               className="w-fit text-xs text-sky-400 hover:underline">{open ? `${t('less')} ▴` : `${t('more')} ▾`}</button>
           )}
           {showDetails && (
-            <div className="prose prose-sm max-w-none border-t border-[var(--af-border)] pt-2 dark:prose-invert prose-p:my-1 prose-ul:my-1">
+            <div className="prose prose-sm max-h-[360px] max-w-none overflow-auto border-t border-[var(--af-border)] pt-2 dark:prose-invert prose-p:my-1 prose-ul:my-1">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{hint.details}</ReactMarkdown>
             </div>
           )}

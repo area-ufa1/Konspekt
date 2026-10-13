@@ -48,8 +48,10 @@ export default function HintWindow() {
   }, [hint?.id]);
 
   if (!hint) return null;
+  // "deep": окно тащится за любое место карточки; кнопки и ссылки drag.js
+  // Tauri пропускает сам, они остаются кликабельными.
   return (
-    <div className="p-1" data-tauri-drag-region>
+    <div className="p-1" data-tauri-drag-region="deep">
       <div ref={box}>
         <HintCard hint={hint} onClose={() => void invoke('hint_window_hide')} />
       </div>
