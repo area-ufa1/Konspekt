@@ -2,3 +2,4 @@
 //! строк расшифровки, второй диалог с Claude, окно поверх всех окон.
 
 pub mod prefilter;
+pub mod reply;
