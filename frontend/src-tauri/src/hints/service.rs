@@ -74,6 +74,7 @@ pub struct HintService {
     running: AtomicBool,
     active: AtomicBool,
     mic: AtomicBool,
+    epoch: AtomicU64,
     checked: AtomicU64,
     shown: AtomicU64,
     last: StdMutex<Option<HintEvent>>,
@@ -85,19 +86,35 @@ fn lock<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl HintService {
-    pub fn begin_recording(&self, enabled: bool, mic: bool) {
-        lock(&self.slot).clear();
+    /// Эпоха записи: её читают синхронно в начале старта и отдают
+    /// `begin_recording`; каждая остановка её сдвигает.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+
+    /// Включает подсказки записи, только если с чтения `epoch` запись не
+    /// остановили. Сверка и запись — под замком слота, как и в `end_recording`:
+    /// опоздавший старт не включит подсказки после остановки.
+    pub fn begin_recording(&self, epoch: u64, enabled: bool, mic: bool) -> bool {
+        let mut slot = lock(&self.slot);
+        if self.epoch.load(Ordering::SeqCst) != epoch {
+            return false;
+        }
+        slot.clear();
         *lock(&self.last) = None;
         *lock(&self.hotkey_error) = None;
         self.checked.store(0, Ordering::SeqCst);
         self.shown.store(0, Ordering::SeqCst);
         self.mic.store(mic, Ordering::SeqCst);
         self.active.store(enabled, Ordering::SeqCst);
+        true
     }
 
     pub fn end_recording(&self) {
+        let mut slot = lock(&self.slot);
+        self.epoch.fetch_add(1, Ordering::SeqCst);
         self.active.store(false, Ordering::SeqCst);
-        lock(&self.slot).clear();
+        slot.clear();
     }
 
     pub fn is_active(&self) -> bool {
@@ -337,13 +354,32 @@ mod tests {
     }
 
     async fn started(service: &HintService, setup: StartSetup) {
-        service.begin_recording(true, false);
+        assert!(service.begin_recording(service.epoch(), true, false));
         let token = service.dialog.begin();
         service.dialog.start(setup, token).await;
     }
 
     fn candidate(text: &str) -> Request {
         Request::Candidate { text: text.into(), at: 42.0 }
+    }
+
+    #[test]
+    fn a_stop_during_start_keeps_hints_off() {
+        let service = HintService::default();
+        let epoch = service.epoch();
+        assert!(service.begin_recording(epoch, true, true), "обычный старт включает");
+        assert!(service.is_active());
+        assert!(service.listens_to_mic());
+
+        // Старт прочитал эпоху, пока он ждал настройки, запись остановили.
+        let epoch = service.epoch();
+        service.end_recording();
+        assert!(!service.begin_recording(epoch, true, false), "опоздавший старт не применяется");
+        assert!(!service.is_active(), "после остановки подсказки выключены");
+
+        // Следующая запись — со свежей эпохой — включает снова.
+        assert!(service.begin_recording(service.epoch(), true, false));
+        assert!(service.is_active());
     }
 
     #[tokio::test]
@@ -472,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn a_burst_while_busy_asks_once_more_with_the_latest() {
         let service = Arc::new(HintService::default());
-        service.begin_recording(true, false);
+        assert!(service.begin_recording(service.epoch(), true, false));
         let seen = Arc::new(std::sync::Mutex::new(Vec::<Request>::new()));
         assert!(service.offer(candidate("первый")), "воркера нет — запускать");
         assert!(!service.offer(candidate("второй")), "воркер уже есть");

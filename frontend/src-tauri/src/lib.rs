@@ -593,6 +593,9 @@ pub fn run() {
                 let handle = app.handle().clone();
                 app.listen("recording-started", move |_event| {
                     let handle = handle.clone();
+                    // Эпоха и метка — сразу, в порядке событий: конец записи, пришедший,
+                    // пока читаем настройки, не даст опоздавшему старту включить подсказки.
+                    let epoch = handle.state::<HintService>().epoch();
                     let token = handle.state::<HintService>().dialog.begin();
                     tauri::async_runtime::spawn(async move {
                         let Some(state) = handle.try_state::<crate::state::AppState>() else { return };
@@ -600,7 +603,10 @@ pub fn run() {
                         let settings = crate::database::repositories::setting::SettingsRepository::get_hint_settings(pool)
                             .await
                             .unwrap_or_default();
-                        handle.state::<HintService>().begin_recording(settings.enabled, settings.mic);
+                        if !handle.state::<HintService>().begin_recording(epoch, settings.enabled, settings.mic) {
+                            // Запись уже остановлена; «запускается» диалога снял request_stop.
+                            return;
+                        }
                         let setup = crate::hints::commands::setup_for_hints(pool, &settings).await;
                         handle.state::<HintService>().dialog.start(setup, token).await;
                     });

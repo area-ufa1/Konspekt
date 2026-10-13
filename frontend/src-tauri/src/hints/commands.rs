@@ -60,8 +60,11 @@ async fn process<R: Runtime>(app: &AppHandle<R>, request: Request) {
     let Some(state) = app.try_state::<crate::state::AppState>() else { return };
     let pool = state.db_manager.pool();
     if matches!(request, Request::Hotkey { .. }) {
-        // Как вопрос «Ассистенту»: дождаться только что сказанного.
-        let _ = crate::audio::live_flush::flush_before_question().await;
+        // Как вопрос «Ассистенту»: дождаться только что сказанного. В лог —
+        // только исход и время.
+        let started = std::time::Instant::now();
+        let outcome = crate::audio::live_flush::flush_before_question().await;
+        log::debug!("Подсказка по хоткею: сброс живой речи — {:?} за {} мс", outcome, started.elapsed().as_millis());
     }
     let lines = crate::audio::recording_commands::get_transcript_history().await.unwrap_or_default();
     let notes = crate::audio::transcript_journal::current_notes();
