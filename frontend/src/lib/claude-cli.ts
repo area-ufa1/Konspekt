@@ -67,3 +67,13 @@ export async function getClaudeLiveModel(): Promise<string> {
 export async function saveClaudeLiveModel(model: string): Promise<void> {
   await invoke('claude_cli_save_live_model', { model });
 }
+
+export interface HintSettings { enabled: boolean; mic: boolean; hotkey: string }
+
+export async function getHintSettings(): Promise<HintSettings> {
+  return invoke<HintSettings>('claude_cli_get_hint_settings');
+}
+
+export async function saveHintSettings(settings: HintSettings): Promise<void> {
+  await invoke('claude_cli_save_hint_settings', { settings });
+}

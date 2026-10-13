@@ -38,6 +38,8 @@ pub mod assistant_turns;
 pub mod audio;
 pub mod claude_cli;
 pub mod claude_session;
+pub mod hints;
+pub mod hint_window;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
@@ -440,6 +442,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
@@ -450,6 +453,7 @@ pub fn run() {
         .manage(security::commands::SecurityState::new())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .manage(claude_session::manager::LiveAssistant::default())
+        .manage(crate::hints::service::HintService::default())
         .setup(|app| {
             if let Err(error) = crash_report::start_session() {
                 log::error!("Failed to initialize crash reporting: {error}");
@@ -582,6 +586,69 @@ pub fn run() {
                 });
             }
 
+            // Подсказки: свой диалог с Claude Code на время записи, если включены.
+            {
+                use crate::hints::service::HintService;
+                use tauri::Listener;
+                let handle = app.handle().clone();
+                app.listen("recording-started", move |_event| {
+                    let handle = handle.clone();
+                    // Эпоха и метка — сразу, в порядке событий: конец записи, пришедший,
+                    // пока читаем настройки, не даст опоздавшему старту включить подсказки.
+                    let epoch = handle.state::<HintService>().epoch();
+                    let token = handle.state::<HintService>().dialog.begin();
+                    tauri::async_runtime::spawn(async move {
+                        let Some(state) = handle.try_state::<crate::state::AppState>() else { return };
+                        let pool = state.db_manager.pool();
+                        let settings = crate::database::repositories::setting::SettingsRepository::get_hint_settings(pool)
+                            .await
+                            .unwrap_or_default();
+                        // Диалог подсказок бывает только у Claude Code: с другим
+                        // провайдером подсказки не включаются и клавиша не занимается.
+                        let enabled = settings.enabled
+                            && crate::claude_session::commands::uses_dialog_provider(pool).await;
+                        if !handle.state::<HintService>().begin_recording(epoch, enabled, settings.mic) {
+                            // Запись уже остановлена; «запускается» диалога снял request_stop.
+                            return;
+                        }
+                        if enabled && !crate::network_policy::local_only() {
+                            // Без await после begin_recording: устаревший старт не регистрирует клавишу.
+                            let error = crate::hints::hotkey::register(&handle, &settings.hotkey).err();
+                            if let Some(error) = &error {
+                                log::warn!("Подсказки: {error}");
+                            }
+                            // Остановка могла пройти между begin_recording и регистрацией:
+                            // её unregister_all тогда был раньше нашей клавиши.
+                            if handle.state::<HintService>().epoch() != epoch {
+                                crate::hints::hotkey::unregister_all(&handle);
+                                return;
+                            }
+                            handle.state::<HintService>().set_hotkey_error(error);
+                        }
+                        let setup = crate::hints::commands::setup_for_hints(pool, &settings).await;
+                        handle.state::<HintService>().dialog.start(setup, token).await;
+                    });
+                });
+                let handle = app.handle().clone();
+                app.listen("recording-stopped", move |_event| {
+                    let handle = handle.clone();
+                    let service = handle.state::<HintService>();
+                    service.end_recording();
+                    crate::hints::hotkey::unregister_all(&handle);
+                    crate::hint_window::hide(&handle);
+                    let token = service.dialog.request_stop();
+                    tauri::async_runtime::spawn(async move {
+                        handle.state::<HintService>().dialog.finish_stop(token).await;
+                    });
+                });
+                let handle = app.handle().clone();
+                app.listen("transcript-update", move |event| {
+                    if let Ok(update) = serde_json::from_str::<crate::audio::recording_commands::TranscriptUpdate>(event.payload()) {
+                        crate::hints::commands::on_transcript(&handle, &update);
+                    }
+                });
+            }
+
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = app.handle().path().resource_dir() {
@@ -630,6 +697,11 @@ pub fn run() {
             claude_session::commands::assistant_ask,
             claude_session::commands::assistant_live_turns,
             claude_session::commands::assistant_status,
+            hints::commands::hints_status,
+            hints::commands::hints_live,
+            hints::commands::hints_current,
+            hint_window::hint_window_hide,
+            hint_window::hint_window_fit,
             assistant_turns::commands::api_get_assistant_turns,
             security::commands::security_status,
             network_policy::get_local_only_mode,
@@ -842,6 +914,8 @@ pub fn run() {
             claude_cli::commands::claude_cli_test_connection,
             claude_cli::commands::claude_cli_get_live_model,
             claude_cli::commands::claude_cli_save_live_model,
+            claude_cli::commands::claude_cli_get_hint_settings,
+            claude_cli::commands::claude_cli_save_hint_settings,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
             summary::summary_engine::commands::builtin_ai_get_model_info,

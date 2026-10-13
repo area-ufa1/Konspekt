@@ -114,3 +114,19 @@ pub async fn claude_cli_save_live_model(state: State<'_, AppState>, model: Strin
         .await
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn claude_cli_get_hint_settings(
+    state: State<'_, AppState>,
+) -> Result<crate::database::repositories::setting::HintSettings, String> {
+    SettingsRepository::get_hint_settings(state.db_manager.pool()).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn claude_cli_save_hint_settings(
+    state: State<'_, AppState>,
+    settings: crate::database::repositories::setting::HintSettings,
+) -> Result<(), String> {
+    crate::hints::parse_hotkey(&settings.hotkey)?;
+    SettingsRepository::save_hint_settings(state.db_manager.pool(), &settings).await.map_err(|e| e.to_string())
+}

@@ -24,6 +24,28 @@ pub struct SaveTranscriptConfigRequest {
     pub api_key: Option<String>,
 }
 
+pub const DEFAULT_HINT_HOTKEY: &str = "Ctrl+Shift+Space";
+
+const SAVE_HINT_SETTINGS_SQL: &str =
+    "INSERT INTO settings (id, provider, model, whisperModel, claudeHintsEnabled, claudeHintsMic, claudeHintsHotkey) \
+     VALUES ('1', 'claude-cli', 'sonnet', 'large-v3', ?, ?, ?) \
+     ON CONFLICT(id) DO UPDATE SET claudeHintsEnabled = excluded.claudeHintsEnabled, \
+     claudeHintsMic = excluded.claudeHintsMic, claudeHintsHotkey = excluded.claudeHintsHotkey";
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HintSettings {
+    pub enabled: bool,
+    pub mic: bool,
+    pub hotkey: String,
+}
+
+impl Default for HintSettings {
+    fn default() -> Self {
+        HintSettings { enabled: false, mic: false, hotkey: DEFAULT_HINT_HOTKEY.into() }
+    }
+}
+
 pub struct SettingsRepository;
 
 // Transcript providers: localWhisper, deepgram, elevenLabs, groq, openai
@@ -442,6 +464,30 @@ impl SettingsRepository {
         .await?;
         Ok(())
     }
+
+    pub async fn get_hint_settings(pool: &SqlitePool) -> Result<HintSettings, sqlx::Error> {
+        let row: Option<(Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT claudeHintsEnabled, claudeHintsMic, claudeHintsHotkey FROM settings WHERE id = '1'",
+        )
+        .fetch_optional(pool)
+        .await?;
+        let Some((enabled, mic, hotkey)) = row else { return Ok(HintSettings::default()) };
+        Ok(HintSettings {
+            enabled: enabled.unwrap_or(0) != 0,
+            mic: mic.unwrap_or(0) != 0,
+            hotkey: hotkey.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).unwrap_or_else(|| DEFAULT_HINT_HOTKEY.into()),
+        })
+    }
+
+    pub async fn save_hint_settings(pool: &SqlitePool, settings: &HintSettings) -> Result<(), sqlx::Error> {
+        sqlx::query(SAVE_HINT_SETTINGS_SQL)
+        .bind(settings.enabled as i64)
+        .bind(settings.mic as i64)
+        .bind(settings.hotkey.trim())
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -506,6 +552,22 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[tokio::test]
+    async fn hint_settings_default_off_and_round_trip() {
+        let pool = migrated_pool().await;
+        assert_eq!(SettingsRepository::get_hint_settings(&pool).await.unwrap(), HintSettings::default());
+        assert_eq!(HintSettings::default().hotkey, "Ctrl+Shift+Space");
+        let wanted = HintSettings { enabled: true, mic: true, hotkey: "Ctrl+Alt+H".into() };
+        SettingsRepository::save_hint_settings(&pool, &wanted).await.unwrap();
+        assert_eq!(SettingsRepository::get_hint_settings(&pool).await.unwrap(), wanted);
+    }
+
+    #[test]
+    fn hint_settings_sql_has_single_spaces() {
+        assert!(!SAVE_HINT_SETTINGS_SQL.contains("  "), "{SAVE_HINT_SETTINGS_SQL}");
+        assert!(SAVE_HINT_SETTINGS_SQL.contains("claudeHintsHotkey) VALUES ('1'"));
     }
 
     #[tokio::test]

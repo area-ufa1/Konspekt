@@ -11,6 +11,8 @@ pub const RESTART_TAIL_SECONDS: f64 = 900.0;
 /// даже если его строки уже были в диалоге, — иначе на короткий вопрос
 /// пересказывается всё с прошлого вопроса.
 pub const NOW_SECONDS: f64 = 120.0;
+/// Подпись по умолчанию у текста в сообщении: вопрос владельца ассистенту.
+pub const OWNER_QUESTION: &str = "Вопрос владельца";
 
 #[derive(Debug, Default, Clone)]
 pub struct Cursor {
@@ -63,7 +65,7 @@ fn notes_block(cursor: &mut Cursor, notes: &[Note], all: bool) -> String {
     }
 }
 
-fn compose(intro: Option<&str>, heading: &str, earlier: Vec<String>, now: Vec<String>, notes: String, question: &str, asked_at: f64) -> String {
+fn compose(intro: Option<&str>, heading: &str, earlier: Vec<String>, now: Vec<String>, notes: String, label: &str, question: &str, asked_at: f64) -> String {
     let mut parts: Vec<String> = intro.map(str::to_string).into_iter().collect();
     if !earlier.is_empty() {
         parts.push(format!("{heading}\n{}", earlier.join("\n")));
@@ -74,7 +76,7 @@ fn compose(intro: Option<&str>, heading: &str, earlier: Vec<String>, now: Vec<St
         parts.push(format!("Сейчас — последние 2 минуты:\n{}", now.join("\n")));
     }
     format!(
-        "{}{notes}\n\nВопрос владельца (на {}): {}",
+        "{}{notes}\n\n{label} (на {}): {}",
         parts.join("\n\n"),
         clock(asked_at),
         question.trim()
@@ -90,7 +92,7 @@ fn now_lines(lines: &[TranscriptSegment], asked_at: f64) -> Vec<String> {
         .collect()
 }
 
-pub fn next_message(cursor: &mut Cursor, lines: &[TranscriptSegment], notes: &[Note], question: &str, asked_at: f64) -> String {
+pub fn next_message(cursor: &mut Cursor, lines: &[TranscriptSegment], notes: &[Note], label: &str, question: &str, asked_at: f64) -> String {
     let fresh: Vec<&TranscriptSegment> = lines
         .iter()
         .filter(|line| cursor.last_sequence.map_or(true, |last| line.sequence_id > last))
@@ -105,10 +107,10 @@ pub fn next_message(cursor: &mut Cursor, lines: &[TranscriptSegment], notes: &[N
         .map(render_line)
         .collect();
     let notes = notes_block(cursor, notes, false);
-    compose(None, "Раньше, с прошлого вопроса:", earlier, now_lines(lines, asked_at), notes, question, asked_at)
+    compose(None, "Раньше, с прошлого вопроса:", earlier, now_lines(lines, asked_at), notes, label, question, asked_at)
 }
 
-pub fn restart_message(cursor: &mut Cursor, lines: &[TranscriptSegment], notes: &[Note], question: &str, asked_at: f64) -> String {
+pub fn restart_message(cursor: &mut Cursor, lines: &[TranscriptSegment], notes: &[Note], label: &str, question: &str, asked_at: f64) -> String {
     let from = asked_at - RESTART_TAIL_SECONDS;
     let earlier = lines
         .iter()
@@ -125,6 +127,7 @@ pub fn restart_message(cursor: &mut Cursor, lines: &[TranscriptSegment], notes: 
         earlier,
         now_lines(lines, asked_at),
         notes,
+        label,
         question,
         asked_at,
     )
@@ -174,7 +177,7 @@ mod tests {
     fn only_new_lines_and_changed_notes_go_out() {
         let mut cursor = Cursor::default();
         let lines = vec![line(1, 5.0, Some("Speaker 1"), "Начнём с гипотез"), line(2, 9.0, Some("You"), "Понял")];
-        let first = next_message(&mut cursor, &lines, &[note("n1", "гипотеза H0")], "О чём речь?", 10.0);
+        let first = next_message(&mut cursor, &lines, &[note("n1", "гипотеза H0")], OWNER_QUESTION, "О чём речь?", 10.0);
         assert!(first.contains("[0:05] Препод/собеседники: Начнём с гипотез"));
         assert!(first.contains("[0:09] Я: Понял"));
         assert!(first.contains("гипотеза H0"));
@@ -182,19 +185,19 @@ mod tests {
         assert_eq!(cursor.last_sequence, Some(2));
 
         let more = vec![lines[0].clone(), lines[1].clone(), line(3, 30.0, None, "без спикера")];
-        let second = next_message(&mut cursor, &more, &[note("n1", "гипотеза H0")], "А дальше?", 200.0);
+        let second = next_message(&mut cursor, &more, &[note("n1", "гипотеза H0")], OWNER_QUESTION, "А дальше?", 200.0);
         assert!(!second.contains("Начнём с гипотез"), "старые строки не повторяются");
         assert!(second.contains("[0:30] без спикера"));
         assert!(!second.contains("гипотеза H0"), "неизменённая заметка не повторяется");
 
-        let third = next_message(&mut cursor, &more, &[note("n1", "гипотеза H1")], "Ещё?", 210.0);
+        let third = next_message(&mut cursor, &more, &[note("n1", "гипотеза H1")], OWNER_QUESTION, "Ещё?", 210.0);
         assert!(third.contains("гипотеза H1"), "изменённая заметка уходит снова");
     }
 
     #[test]
     fn empty_delta_says_nothing_heard_yet() {
         let mut cursor = Cursor::default();
-        let message = next_message(&mut cursor, &[], &[], "Что сейчас происходит?", 3.0);
+        let message = next_message(&mut cursor, &[], &[], OWNER_QUESTION, "Что сейчас происходит?", 3.0);
         assert!(message.contains("За последние 2 минуты реплик нет"));
         assert!(message.contains("Что сейчас происходит?"));
     }
@@ -207,12 +210,12 @@ mod tests {
             line(2, 400.0, Some("Speaker 1"), "про Liquid Glass"),
             line(3, 450.0, Some("Speaker 1"), "про Metro"),
         ];
-        let first = next_message(&mut cursor, &lines, &[], "че там", 460.0);
+        let first = next_message(&mut cursor, &lines, &[], OWNER_QUESTION, "че там", 460.0);
         let (earlier, now) = first.split_once("Сейчас — последние 2 минуты:").unwrap();
         assert!(earlier.contains("давнее") && !earlier.contains("Metro"));
         assert!(now.contains("про Liquid Glass") && now.contains("про Metro") && !now.contains("давнее"));
 
-        let again = next_message(&mut cursor, &lines, &[], "а сейчас?", 470.0);
+        let again = next_message(&mut cursor, &lines, &[], OWNER_QUESTION, "а сейчас?", 470.0);
         assert!(!again.contains("Раньше"), "старое не повторяется");
         assert!(again.contains("про Metro"), "«сейчас» уходит снова");
     }
@@ -224,11 +227,22 @@ mod tests {
             line(1, 100.0, Some("Speaker 1"), "очень давно"),
             line(2, 2000.0, Some("Speaker 1"), "недавно"),
         ];
-        let message = restart_message(&mut cursor, &lines, &[note("n1", "заметка")], "Вопрос", 2100.0);
+        let message = restart_message(&mut cursor, &lines, &[note("n1", "заметка")], OWNER_QUESTION, "Вопрос", 2100.0);
         assert!(!message.contains("очень давно"));
         assert!(message.contains("недавно"));
         assert!(message.contains("заметка"));
         assert!(message.contains("перезапущен"));
         assert_eq!(cursor.last_sequence, Some(2));
+    }
+
+    #[test]
+    fn the_label_names_what_is_asked() {
+        let lines = vec![line(1, 10.0, Some("Speaker 1"), "назовите свойства транзакции")];
+        let mut cursor = Cursor::default();
+        let message = next_message(&mut cursor, &lines, &[], "Фраза-кандидат", "назовите свойства транзакции", 12.0);
+        assert!(message.ends_with("Фраза-кандидат (на 0:12): назовите свойства транзакции"), "{message}");
+        let mut cursor = Cursor::default();
+        let owner = next_message(&mut cursor, &lines, &[], OWNER_QUESTION, "о чём речь", 12.0);
+        assert!(owner.ends_with("Вопрос владельца (на 0:12): о чём речь"), "{owner}");
     }
 }

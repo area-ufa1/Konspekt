@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyAnswerEvent, mergeLiveTurns, clock } from '../../src/lib/assistant.ts'
+import { applyAnswerEvent, mergeLiveTurns, clock, isQuestion } from '../../src/lib/assistant.ts'
 
 const pending = { id: 'a', askedAtSec: 65, question: 'q', answer: '', model: '', createdAt: '', status: 'pending' }
 
@@ -29,4 +29,11 @@ test('saved turns fill in after a reload without duplicates', () => {
 test('clock matches the transcript', () => {
   assert.equal(clock(65), '1:05')
   assert.equal(clock(3723), '1:02:03')
+})
+
+test('turns without kind are questions, hints are not', () => {
+  assert.equal(isQuestion({}), true)
+  assert.equal(isQuestion({ kind: 'question' }), true)
+  assert.equal(isQuestion({ kind: 'hint' }), false)
+  assert.equal(isQuestion({ kind: 'hint-hotkey' }), false)
 })

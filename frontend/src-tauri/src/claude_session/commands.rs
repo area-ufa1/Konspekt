@@ -4,7 +4,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 use super::manager::{AskInput, AssistantStatus, LiveAssistant, StartSetup, IDLE_TIMEOUT};
-use super::{AssistantTurn, SYSTEM_PROMPT};
+use super::{AssistantTurn, TurnKind, SYSTEM_PROMPT};
 use crate::database::repositories::setting::SettingsRepository;
 use crate::summary::llm_client::LLMProvider;
 
@@ -18,12 +18,29 @@ struct AnswerEvent<'a> {
     done: bool,
 }
 
-/// Что делать с ассистентом при старте записи — по провайдеру из настроек.
+/// Что делать с ассистентом при старте записи.
 pub async fn setup_for_recording(pool: &sqlx::SqlitePool) -> StartSetup {
+    setup_with_prompt(pool, SYSTEM_PROMPT).await
+}
+
+/// Диалог записи бывает только у провайдера Claude Code.
+pub fn has_dialog(provider: &str) -> bool {
+    provider == "claude-cli"
+}
+
+/// Выбран ли в настройках провайдер с диалогом записи (то же решение, что
+/// принимает `setup_with_prompt`).
+pub async fn uses_dialog_provider(pool: &sqlx::SqlitePool) -> bool {
+    matches!(SettingsRepository::get_model_config(pool).await, Ok(Some(config)) if has_dialog(&config.provider))
+}
+
+/// Что делать с диалогом записи при её старте — по провайдеру из настроек;
+/// `system_prompt` у ассистента и у подсказок свой.
+pub async fn setup_with_prompt(pool: &sqlx::SqlitePool, system_prompt: &str) -> StartSetup {
     let Ok(Some(config)) = SettingsRepository::get_model_config(pool).await else {
         return StartSetup::Unavailable("Модель ИИ не выбрана: Настройки → Саммари".into());
     };
-    if config.provider != "claude-cli" {
+    if !has_dialog(&config.provider) {
         // Claude по ключу отвечает разовыми вызовами — диалог не нужен; остальным ассистент недоступен.
         return StartSetup::Unavailable(String::new());
     }
@@ -56,7 +73,7 @@ pub async fn setup_for_recording(pool: &sqlx::SqlitePool) -> StartSetup {
         config: super::dialog::DialogConfig {
             binary,
             model,
-            system_prompt: SYSTEM_PROMPT.into(),
+            system_prompt: system_prompt.into(),
             idle_timeout: IDLE_TIMEOUT,
         },
         shield,
@@ -130,7 +147,7 @@ pub async fn assistant_ask<R: Runtime>(
     };
     let (answer, model) = if subscription {
         let model = assistant.status().await.model.unwrap_or_default();
-        let input = AskInput { question: &question, asked_at, lines: &lines, notes: &notes };
+        let input = AskInput { label: super::context::OWNER_QUESTION, question: &question, asked_at, lines: &lines, notes: &notes };
         let answer = assistant.ask(input, || setup_for_recording(pool), |text| emit(text, false)).await?;
         // Отложенный диалог узнаёт модель только при первом вопросе.
         let model = if model.is_empty() { assistant.status().await.model.unwrap_or_default() } else { model };
@@ -139,7 +156,7 @@ pub async fn assistant_ask<R: Runtime>(
         // Claude по ключу: остальные провайдеры отказаны выше.
         let resolved = crate::live_assistant::resolve_assistant_model(pool).await?;
         let mut cursor = super::context::Cursor::default();
-        let user_prompt = super::context::next_message(&mut cursor, &lines, &notes, &question, asked_at);
+        let user_prompt = super::context::next_message(&mut cursor, &lines, &notes, super::context::OWNER_QUESTION, &question, asked_at);
         let hidden = crate::privacy::vocabulary::shield_for(pool, None).await;
         let answer = crate::live_assistant::generate_assistant_answer(
             &resolved,
@@ -161,6 +178,7 @@ pub async fn assistant_ask<R: Runtime>(
         answer,
         model,
         created_at: chrono::Utc::now().to_rfc3339(),
+        kind: TurnKind::Question,
     };
     log::info!(
         "Ассистент ответил: вопрос {} симв., ответ {} симв.",
@@ -218,6 +236,7 @@ mod tests {
             answer: "Вероятность **такого же** результата при верной H0.".into(),
             model: "haiku".into(),
             created_at: "2026-10-10T09:00:00Z".into(),
+            kind: TurnKind::Question,
         }
     }
 

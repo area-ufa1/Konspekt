@@ -1,6 +1,6 @@
 [package]
 name = "meetily"
-version = "0.1.1"
+version = "0.2.0"
 description = "Konspekt — запись и конспект пар с Claude"
 authors = ["TylerBuza"]
 repository = "https://github.com/area-ufa1/Konspekt"
@@ -166,6 +166,7 @@ tauri-plugin-fs = "2.5.1"
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-store = "2.4.4"
 tauri-plugin-notification = "2.3.3"
+tauri-plugin-global-shortcut = "2"
 
 # Desktop-only single instance guard
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]

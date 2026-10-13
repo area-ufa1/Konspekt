@@ -62,6 +62,21 @@ while ($true) {
     $parts = @($content)
     $final = $content
   }
+  if ($mode -eq 'hint-none') {
+    # Всегда «НЕТ», но в обёртке **…** и по частям: первая дельта «*» посреди стрима выглядит подсказкой.
+    $no = [regex]::Unescape('\u041d\u0415\u0422')
+    $parts = @('*', "*$no**")
+    $final = "**$no**"
+  }
+  if ($mode -eq 'hint') {
+    # Отвечает в формате подсказки; на фразу с меткой НЕ_ВОПРОС — «НЕТ».
+    $reply = [regex]::Unescape('\u0412\u041e\u041f\u0420\u041e\u0421: \u0427\u0435\u043c 3\u041d\u0424 \u043e\u0442\u043b\u0438\u0447\u0430\u0435\u0442\u0441\u044f \u043e\u0442 2\u041d\u0424?\n\u041a\u041e\u0420\u041e\u0422\u041a\u041e: \u0412 3\u041d\u0424 \u043d\u0435\u0442 \u0442\u0440\u0430\u043d\u0437\u0438\u0442\u0438\u0432\u043d\u044b\u0445 \u0437\u0430\u0432\u0438\u0441\u0438\u043c\u043e\u0441\u0442\u0435\u0439.\n\u041f\u041e\u0414\u0420\u041e\u0411\u041d\u041e:\n\u041a\u043b\u044e\u0447 -> A -> B \u0437\u0430\u043f\u0440\u0435\u0449\u0435\u043d\u043e.')
+    if ($content.Contains([regex]::Unescape('\u041d\u0415_\u0412\u041e\u041f\u0420\u041e\u0421'))) {
+      $reply = [regex]::Unescape('\u041d\u0415\u0422')
+    }
+    $parts = @($reply)
+    $final = $reply
+  }
   foreach ($part in $parts) {
     $delta = @{ type = 'stream_event'; event = @{ type = 'content_block_delta'; delta = @{ type = 'text_delta'; text = $part } } } | ConvertTo-Json -Compress -Depth 5
     if ($mode -eq 'split') {

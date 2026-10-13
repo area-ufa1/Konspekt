@@ -1597,6 +1597,13 @@
     "notLoggedIn": "Claude Code is installed but not signed in. Run in a terminal: claude auth login",
     "install": "How to install Claude Code",
     "apiKeyEnvWarning": "The ANTHROPIC_API_KEY environment variable is set: Claude Code will spend that key instead of your subscription.",
+    "hintsLabel": "Hints for the lecturer's questions",
+    "hintsHint": "When the lecturer asks the group or you, a ready answer pops up above all windows. Takes effect from the next recording.",
+    "hintsMicLabel": "Also listen to my microphone",
+    "hintsMicHint": "For in-person classes, where the lecturer is heard through the laptop microphone. Keep it off for online classes.",
+    "hintsHotkeyLabel": "Hotkey “answer the last question”",
+    "hintsHotkeyHint": "For example Ctrl+Shift+Space. Works during a recording from any window.",
+    "hintsLocalOnly": "Unavailable: “This computer only” is on (Settings → Security).",
     "liveModelLabel": "Live panel model",
     "liveModelHint": "Answers questions during recording. Haiku is faster, Sonnet is more detailed.",
     "haikuNeedsUpdate": "Haiku 5.5 needs Claude Code 2.1.293 or newer. Update with: claude update",
@@ -1619,5 +1626,21 @@
     "failed": "Failed: {message}",
     "savedTitle": "Questions to the assistant",
     "savedEmpty": "No questions were asked during this recording."
+  },
+  "hints": {
+    "tab": "Hints",
+    "question": "Question",
+    "lastQuestion": "Last question",
+    "more": "More",
+    "less": "Less",
+    "writing": "Claude is writing…",
+    "noQuestion": "The lecturer has not asked anything in the last few minutes.",
+    "failed": "Could not get an answer: {message}",
+    "close": "Close",
+    "empty": "Answers to the lecturer's questions appear here. Missed one? Press {hotkey}.",
+    "counter": "Lines checked: {checked}, hints shown: {shown}",
+    "off": "Hints are off. Turn them on in Settings → Summary → Claude Code. Takes effect from the next recording.",
+    "unavailable": "Hints are unavailable in this recording.",
+    "savedTitle": "Hints"
   }
 }

@@ -123,7 +123,7 @@ export default function RootLayout({
   // location directly made the server draw the full app chrome and the client
   // the bare bar, which React reported as a hydration failure.
   const pathname = usePathname()
-  const isMiniBar = pathname?.startsWith('/minibar') ?? false
+  const isMiniBar = (pathname?.startsWith('/minibar') || pathname?.startsWith('/hint')) ?? false
 
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingCompleted, setOnboardingCompleted] = useState(false)

@@ -57,7 +57,50 @@ enum Record {
     /// The order of the notes, written when one was started between others.
     NoteOrder { ids: Vec<String> },
     /// A question to the recording's assistant with its answer.
-    AssistantTurn(crate::claude_session::AssistantTurn),
+    AssistantTurn(JournalTurn),
+}
+
+/// Ход ассистента в строке журнала. Тег записи уже называется `kind`, поэтому
+/// вид хода лежит под `turnKind`; в старых строках его нет — это вопрос.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JournalTurn {
+    id: String,
+    asked_at_sec: f64,
+    question: String,
+    answer: String,
+    model: String,
+    created_at: String,
+    #[serde(default, rename = "turnKind")]
+    kind: crate::claude_session::TurnKind,
+}
+
+impl From<&crate::claude_session::AssistantTurn> for JournalTurn {
+    fn from(turn: &crate::claude_session::AssistantTurn) -> Self {
+        JournalTurn {
+            id: turn.id.clone(),
+            asked_at_sec: turn.asked_at_sec,
+            question: turn.question.clone(),
+            answer: turn.answer.clone(),
+            model: turn.model.clone(),
+            created_at: turn.created_at.clone(),
+            kind: turn.kind,
+        }
+    }
+}
+
+impl From<JournalTurn> for crate::claude_session::AssistantTurn {
+    fn from(turn: JournalTurn) -> Self {
+        crate::claude_session::AssistantTurn {
+            id: turn.id,
+            asked_at_sec: turn.asked_at_sec,
+            question: turn.question,
+            answer: turn.answer,
+            model: turn.model,
+            created_at: turn.created_at,
+            kind: turn.kind,
+        }
+    }
 }
 
 /// The journal of the recording now running, if any.
@@ -201,7 +244,7 @@ pub fn add_turn(turn: &crate::claude_session::AssistantTurn) -> Result<(), Strin
     let mut guard = current();
     let journal = guard.as_mut().ok_or("Запись не идёт")?;
     journal
-        .append(&Record::AssistantTurn(turn.clone()))
+        .append(&Record::AssistantTurn(turn.into()))
         .map_err(|error| format!("Не удалось сохранить ответ ассистента: {error}"))?;
     journal.turns.push(turn.clone());
     Ok(())
@@ -359,7 +402,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
                 // Stable: a note the list does not name keeps its place after the rest.
                 notes.sort_by_key(|note| ids.iter().position(|id| *id == note.id).unwrap_or(usize::MAX));
             }
-            Some(Record::AssistantTurn(turn)) => turns.push(turn),
+            Some(Record::AssistantTurn(turn)) => turns.push(turn.into()),
             None => skipped += 1,
         }
     }
@@ -622,11 +665,22 @@ mod tests {
         let _journal = test_lock();
         let dir = tempfile::tempdir().unwrap();
         begin(dir.path(), "пара", "2026-10-10T09:00:00Z");
-        let turn = crate::claude_session::AssistantTurn { id: "t1".into(), asked_at_sec: 12.0, question: "q".into(), answer: "a".into(), model: "haiku".into(), created_at: "2026-10-10T09:00:12Z".into() };
+        let turn = crate::claude_session::AssistantTurn { id: "t1".into(), asked_at_sec: 12.0, question: "q".into(), answer: "a".into(), model: "haiku".into(), created_at: "2026-10-10T09:00:12Z".into(), kind: crate::claude_session::TurnKind::Question };
         add_turn(&turn).unwrap();
         assert_eq!(current_turns(), vec![turn.clone()]);
         end();
         assert_eq!(turns_in(dir.path()), vec![turn]);
+    }
+
+    #[test]
+    fn a_hint_keeps_its_kind_in_the_journal() {
+        let _journal = test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        begin(dir.path(), "пара", "2026-10-10T09:00:00Z");
+        let hint = crate::claude_session::AssistantTurn { id: "h1".into(), asked_at_sec: 20.0, question: "q".into(), answer: "a".into(), model: "haiku".into(), created_at: "2026-10-10T09:00:20Z".into(), kind: crate::claude_session::TurnKind::HintHotkey };
+        add_turn(&hint).unwrap();
+        end();
+        assert_eq!(turns_in(dir.path()), vec![hint]);
     }
 
     #[test]
