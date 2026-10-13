@@ -39,6 +39,7 @@ pub mod audio;
 pub mod claude_cli;
 pub mod claude_session;
 pub mod hints;
+pub mod hint_window;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
@@ -452,6 +453,7 @@ pub fn run() {
         .manage(security::commands::SecurityState::new())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .manage(claude_session::manager::LiveAssistant::default())
+        .manage(crate::hints::service::HintService::default())
         .setup(|app| {
             if let Err(error) = crash_report::start_session() {
                 log::error!("Failed to initialize crash reporting: {error}");
@@ -584,6 +586,43 @@ pub fn run() {
                 });
             }
 
+            // Подсказки: свой диалог с Claude Code на время записи, если включены.
+            {
+                use crate::hints::service::HintService;
+                use tauri::Listener;
+                let handle = app.handle().clone();
+                app.listen("recording-started", move |_event| {
+                    let handle = handle.clone();
+                    let token = handle.state::<HintService>().dialog.begin();
+                    tauri::async_runtime::spawn(async move {
+                        let Some(state) = handle.try_state::<crate::state::AppState>() else { return };
+                        let pool = state.db_manager.pool();
+                        let settings = crate::database::repositories::setting::SettingsRepository::get_hint_settings(pool)
+                            .await
+                            .unwrap_or_default();
+                        handle.state::<HintService>().begin_recording(settings.enabled, settings.mic);
+                        let setup = crate::hints::commands::setup_for_hints(pool, &settings).await;
+                        handle.state::<HintService>().dialog.start(setup, token).await;
+                    });
+                });
+                let handle = app.handle().clone();
+                app.listen("recording-stopped", move |_event| {
+                    let handle = handle.clone();
+                    let service = handle.state::<HintService>();
+                    service.end_recording();
+                    let token = service.dialog.request_stop();
+                    tauri::async_runtime::spawn(async move {
+                        handle.state::<HintService>().dialog.finish_stop(token).await;
+                    });
+                });
+                let handle = app.handle().clone();
+                app.listen("transcript-update", move |event| {
+                    if let Ok(update) = serde_json::from_str::<crate::audio::recording_commands::TranscriptUpdate>(event.payload()) {
+                        crate::hints::commands::on_transcript(&handle, &update);
+                    }
+                });
+            }
+
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = app.handle().path().resource_dir() {
@@ -632,6 +671,9 @@ pub fn run() {
             claude_session::commands::assistant_ask,
             claude_session::commands::assistant_live_turns,
             claude_session::commands::assistant_status,
+            hints::commands::hints_status,
+            hints::commands::hints_live,
+            hints::commands::hints_current,
             assistant_turns::commands::api_get_assistant_turns,
             security::commands::security_status,
             network_policy::get_local_only_mode,

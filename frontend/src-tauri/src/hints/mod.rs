@@ -1,6 +1,7 @@
 //! Подсказки на вопросы преподавателя (Konspekt, подпроект 2): префильтр
 //! строк расшифровки, второй диалог с Claude, окно поверх всех окон.
 
+pub mod commands;
 pub mod prefilter;
 pub mod reply;
 pub mod service;
