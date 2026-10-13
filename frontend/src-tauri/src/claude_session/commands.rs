@@ -18,8 +18,14 @@ struct AnswerEvent<'a> {
     done: bool,
 }
 
-/// Что делать с ассистентом при старте записи — по провайдеру из настроек.
+/// Что делать с ассистентом при старте записи.
 pub async fn setup_for_recording(pool: &sqlx::SqlitePool) -> StartSetup {
+    setup_with_prompt(pool, SYSTEM_PROMPT).await
+}
+
+/// Что делать с диалогом записи при её старте — по провайдеру из настроек;
+/// `system_prompt` у ассистента и у подсказок свой.
+pub async fn setup_with_prompt(pool: &sqlx::SqlitePool, system_prompt: &str) -> StartSetup {
     let Ok(Some(config)) = SettingsRepository::get_model_config(pool).await else {
         return StartSetup::Unavailable("Модель ИИ не выбрана: Настройки → Саммари".into());
     };
@@ -56,7 +62,7 @@ pub async fn setup_for_recording(pool: &sqlx::SqlitePool) -> StartSetup {
         config: super::dialog::DialogConfig {
             binary,
             model,
-            system_prompt: SYSTEM_PROMPT.into(),
+            system_prompt: system_prompt.into(),
             idle_timeout: IDLE_TIMEOUT,
         },
         shield,
@@ -130,7 +136,7 @@ pub async fn assistant_ask<R: Runtime>(
     };
     let (answer, model) = if subscription {
         let model = assistant.status().await.model.unwrap_or_default();
-        let input = AskInput { question: &question, asked_at, lines: &lines, notes: &notes };
+        let input = AskInput { label: super::context::OWNER_QUESTION, question: &question, asked_at, lines: &lines, notes: &notes };
         let answer = assistant.ask(input, || setup_for_recording(pool), |text| emit(text, false)).await?;
         // Отложенный диалог узнаёт модель только при первом вопросе.
         let model = if model.is_empty() { assistant.status().await.model.unwrap_or_default() } else { model };
@@ -139,7 +145,7 @@ pub async fn assistant_ask<R: Runtime>(
         // Claude по ключу: остальные провайдеры отказаны выше.
         let resolved = crate::live_assistant::resolve_assistant_model(pool).await?;
         let mut cursor = super::context::Cursor::default();
-        let user_prompt = super::context::next_message(&mut cursor, &lines, &notes, &question, asked_at);
+        let user_prompt = super::context::next_message(&mut cursor, &lines, &notes, super::context::OWNER_QUESTION, &question, asked_at);
         let hidden = crate::privacy::vocabulary::shield_for(pool, None).await;
         let answer = crate::live_assistant::generate_assistant_answer(
             &resolved,

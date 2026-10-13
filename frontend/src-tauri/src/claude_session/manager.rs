@@ -57,6 +57,8 @@ pub struct StartToken(u64);
 pub struct StopToken(u64);
 
 pub struct AskInput<'a> {
+    /// Чем подписан текст в сообщении: «Вопрос владельца», «Фраза-кандидат»…
+    pub label: &'a str,
     pub question: &'a str,
     pub asked_at: f64,
     pub lines: &'a [TranscriptSegment],
@@ -372,9 +374,9 @@ impl LiveAssistant {
                 },
             };
             let message = if restarted {
-                restart_message(&mut live.cursor, input.lines, input.notes, input.question, input.asked_at)
+                restart_message(&mut live.cursor, input.lines, input.notes, input.label, input.question, input.asked_at)
             } else {
-                next_message(&mut live.cursor, input.lines, input.notes, input.question, input.asked_at)
+                next_message(&mut live.cursor, input.lines, input.notes, input.label, input.question, input.asked_at)
             };
             let message = crate::privacy::hide(live.shield.as_ref(), &message);
             let shield = live.shield.as_ref();
@@ -549,7 +551,7 @@ mod tests {
     }
 
     fn input<'a>(question: &'a str) -> AskInput<'a> {
-        AskInput { question, asked_at: 10.0, lines: &[], notes: &[] }
+        AskInput { label: crate::claude_session::context::OWNER_QUESTION, question, asked_at: 10.0, lines: &[], notes: &[] }
     }
 
     fn line(sequence_id: u64, at: f64, text: &str) -> TranscriptSegment {
@@ -756,7 +758,7 @@ mod tests {
         let assistant = LiveAssistant::default();
         start(&assistant, ready(&fake)).await; // разогрев — ход 1, вопрос — ход 2 → падение
         let lines = [line(1, 10.0, "старая реплика"), line(2, 1500.0, "свежая реплика")];
-        let asked = AskInput { question: "после падения", asked_at: 1600.0, lines: &lines, notes: &[] };
+        let asked = AskInput { label: crate::claude_session::context::OWNER_QUESTION, question: "после падения", asked_at: 1600.0, lines: &lines, notes: &[] };
         let answer = assistant.ask(asked, no_setup(), |_| {}).await.unwrap();
         assert!(answer.starts_with("turn 1"), "новый процесс отвечает с первого хода: {answer}");
         let sent = fake.message(1).expect("новый процесс получил сообщение");
