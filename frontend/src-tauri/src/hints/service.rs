@@ -134,6 +134,21 @@ impl HintService {
         F: FnMut(Request) -> Fut,
         Fut: Future<Output = ()>,
     {
+        // Паника обработчика или брошенный future не должны оставить «воркер
+        // занят» навсегда. На обычном выходе флагом уже распорядились ниже
+        // (он мог перейти к другому воркеру), поэтому сторож снимается.
+        struct Running<'a> {
+            flag: &'a AtomicBool,
+            armed: bool,
+        }
+        impl Drop for Running<'_> {
+            fn drop(&mut self) {
+                if self.armed {
+                    self.flag.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+        let mut guard = Running { flag: &self.running, armed: true };
         loop {
             let next = lock(&self.slot).take();
             match next {
@@ -145,6 +160,7 @@ impl HintService {
                     if waiting && !self.running.swap(true, Ordering::SeqCst) {
                         continue;
                     }
+                    guard.armed = false;
                     return;
                 }
             }
@@ -223,8 +239,13 @@ impl HintService {
                 })
             }
             Ok(_) => {
-                if kind == TurnKind::HintHotkey {
+                // Окно хоткея открыто сразу; окно кандидата — если посреди стрима
+                // текст выглядел подсказкой («*»), а итог — «НЕТ». Не оставляем «пишет».
+                if kind == TurnKind::HintHotkey || shown {
                     event.state = HintState::Empty;
+                    event.question.clear();
+                    event.short.clear();
+                    event.details.clear();
                     emit(&event, &mut shown);
                 }
                 None
@@ -233,6 +254,8 @@ impl HintService {
                 log::warn!("Подсказка не получена: {}", error.lines().next().unwrap_or("").chars().take(120).collect::<String>());
                 if shown {
                     event.state = HintState::Error;
+                    // Недописанное «Подробно» под ошибкой не показываем; вопрос оставляем.
+                    event.details.clear();
                     event.short = error;
                     emit(&event, &mut shown);
                 }
@@ -268,6 +291,18 @@ mod slot_tests {
         slot.put(candidate("раньше"));
         slot.put(Request::Hotkey { at: 9.0 });
         assert_eq!(slot.take(), Some(Request::Hotkey { at: 9.0 }), "хоткей вытесняет кандидата");
+    }
+
+    #[tokio::test]
+    async fn a_panicking_handler_does_not_leave_the_worker_running() {
+        let service = std::sync::Arc::new(HintService::default());
+        assert!(service.offer(candidate("первый")));
+        let worker = {
+            let service = service.clone();
+            tokio::spawn(async move { service.drain(|_| async { panic!("обработчик упал") }).await })
+        };
+        assert!(worker.await.is_err(), "паника дошла до задачи");
+        assert!(service.offer(candidate("второй")), "воркера нет — запускать снова");
     }
 }
 
@@ -353,7 +388,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hotkey_shows_writing_at_once_and_empty_when_no_question() {
+    async fn hotkey_shows_writing_at_once_and_saves_the_hint() {
         let _policy = online();
         let fake = FakeClaude::new("hint");
         let service = HintService::default();
@@ -364,6 +399,41 @@ mod tests {
         assert_eq!(turn.kind, TurnKind::HintHotkey);
         assert_eq!(events.first().unwrap().state, HintState::Writing, "окно открывается сразу");
         assert_eq!(service.counts(), (0, 1), "хоткей — не проверка кандидата");
+        service.dialog.stop().await;
+    }
+
+    #[tokio::test]
+    async fn hotkey_without_questions_ends_empty() {
+        let _policy = online();
+        let fake = FakeClaude::new("hint-none");
+        let service = HintService::default();
+        started(&service, ready(&fake)).await;
+        let mut events = Vec::new();
+        let turn = service.answer(&Request::Hotkey { at: 7.0 }, &[], &[], no_setup(), |e| events.push(e.clone())).await;
+        assert_eq!(turn, None);
+        assert_eq!(events.first().unwrap().state, HintState::Writing, "окно открывается сразу");
+        let last = events.last().unwrap();
+        assert_eq!(last.state, HintState::Empty, "{events:?}");
+        assert_eq!(service.last_event().as_ref(), Some(last));
+        assert_eq!(service.counts(), (0, 0));
+        service.dialog.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_candidate_shown_mid_stream_does_not_stay_writing_after_no() {
+        let _policy = online();
+        // Первая дельта «*» разбирается как подсказка, итог «**НЕТ**» — отказ.
+        let fake = FakeClaude::new("hint-none");
+        let service = HintService::default();
+        started(&service, ready(&fake)).await;
+        let mut events = Vec::new();
+        let turn = service.answer(&candidate("ну что скажете"), &[], &[], no_setup(), |e| events.push(e.clone())).await;
+        assert_eq!(turn, None);
+        assert_eq!(events.first().map(|e| e.state), Some(HintState::Writing), "окно показалось посреди стрима");
+        let last = events.last().unwrap();
+        assert_eq!(last.state, HintState::Empty, "окно не залипает в «пишет»: {events:?}");
+        assert!(last.short.is_empty() && last.details.is_empty(), "{last:?}");
+        assert_eq!(service.counts(), (1, 0));
         service.dialog.stop().await;
     }
 
