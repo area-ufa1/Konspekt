@@ -80,19 +80,22 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
   useEffect(() => {
     getHintSettings()
       .then((loaded) => { setHints(loaded); setHotkeyDraft(loaded.hotkey); })
-      .catch(() => setHints({ enabled: false, mic: false, hotkey: 'Ctrl+Shift+Space' }));
+      .catch(() => {
+        setHints({ enabled: false, mic: false, hotkey: 'Ctrl+Shift+Space' });
+        setHotkeyDraft('Ctrl+Shift+Space');
+      });
     invoke<boolean>('get_local_only_mode')
       .then(setLocalOnly)
       .catch(() => setLocalOnly(false));
   }, []);
 
   const persistHints = async (next: HintSettings) => {
-    setHints(next);
     try {
       await saveHintSettings(next);
+      setHints(next);
       setHotkeyError(null);
     } catch (error) {
-      setHotkeyError(typeof error === 'string' ? error : (error as Error)?.message ?? '');
+      setHotkeyError(typeof error === 'string' ? error : (error as Error)?.message || String(error));
     }
   };
 
@@ -278,7 +281,10 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
             <Label htmlFor="claude-hints-hotkey">{t('hintsHotkeyLabel')}</Label>
             <Input id="claude-hints-hotkey" value={hotkeyDraft} disabled={localOnly || !hints.enabled} className="mt-1"
               onChange={(e) => setHotkeyDraft(e.target.value)}
-              onBlur={() => void persistHints({ ...hints, hotkey: hotkeyDraft.trim() || 'Ctrl+Shift+Space' })} />
+              onBlur={() => {
+                const wanted = hotkeyDraft.trim() || 'Ctrl+Shift+Space';
+                if (wanted !== hints.hotkey) void persistHints({ ...hints, hotkey: wanted });
+              }} />
             <p className="text-xs text-muted-foreground mt-1">{t('hintsHotkeyHint')}</p>
             {hotkeyError && <p className="text-xs text-red-600 mt-1">{hotkeyError}</p>}
           </div>
