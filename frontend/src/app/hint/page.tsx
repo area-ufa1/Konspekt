@@ -29,9 +29,11 @@ export default function HintWindow() {
       }
       setHint(event);
     };
-    // Событие могло прийти раньше, чем окно загрузилось.
-    invoke<HintEvent | null>('hints_current').then((current) => { if (current) receive(current); }).catch(() => {});
-    const unlisten = listen<HintEvent>('hint-update', (event) => receive(event.payload));
+    // Событие могло прийти раньше, чем окно загрузилось. Ответ `hints_current`,
+    // пришедший позже свежего `hint-update`, устарел — его не применяем.
+    let updated = false;
+    invoke<HintEvent | null>('hints_current').then((current) => { if (current && !updated) receive(current); }).catch(() => {});
+    const unlisten = listen<HintEvent>('hint-update', (event) => { updated = true; receive(event.payload); });
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') void invoke('hint_window_hide'); };
     window.addEventListener('keydown', onKey);
     return () => { void unlisten.then((stop) => stop()); window.removeEventListener('keydown', onKey); };

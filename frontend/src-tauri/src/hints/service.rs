@@ -78,6 +78,9 @@ pub struct HintService {
     checked: AtomicU64,
     shown: AtomicU64,
     last: StdMutex<Option<HintEvent>>,
+    /// Подсказка, окно которой владелец закрыл (✕/Esc): её события окно снова
+    /// не открывают. У новой подсказки новый id — правило к ней не относится.
+    dismissed: StdMutex<Option<String>>,
     hotkey_error: StdMutex<Option<String>>,
 }
 
@@ -102,6 +105,7 @@ impl HintService {
         }
         slot.clear();
         *lock(&self.last) = None;
+        *lock(&self.dismissed) = None;
         *lock(&self.hotkey_error) = None;
         self.checked.store(0, Ordering::SeqCst);
         self.shown.store(0, Ordering::SeqCst);
@@ -131,6 +135,22 @@ impl HintService {
 
     pub fn last_event(&self) -> Option<HintEvent> {
         lock(&self.last).clone()
+    }
+
+    /// Владелец закрыл окно: текущую подсказку больше не показывать.
+    pub fn dismiss_current(&self) {
+        let id = lock(&self.last).as_ref().map(|event| event.id.clone());
+        *lock(&self.dismissed) = id;
+    }
+
+    /// Открывать ли окно по событию. Кандидат, оказавшийся «НЕТ», окно не
+    /// открывает (иначе мелькнёт прошлая карточка), закрытая владельцем
+    /// подсказка — тоже; событие при этом всё равно уходит в окно и вкладку.
+    pub fn should_show(&self, event: &HintEvent) -> bool {
+        if event.state == HintState::Empty && event.kind != TurnKind::HintHotkey {
+            return false;
+        }
+        lock(&self.dismissed).as_deref() != Some(event.id.as_str())
     }
 
     pub fn set_hotkey_error(&self, error: Option<String>) {
@@ -184,9 +204,51 @@ impl HintService {
         }
     }
 
+    /// Событие подсказки до запроса к диалогу. Хоткей открывает окно сразу —
+    /// «пишет» уходит здесь, ещё до сброса живой речи (до 4 с); кандидат
+    /// окно до первой дельты не трогает.
+    pub fn announce(&self, request: &Request, mut on_event: impl FnMut(&HintEvent)) -> HintEvent {
+        let (kind, at) = match request {
+            Request::Candidate { at, .. } => (TurnKind::Hint, *at),
+            Request::Hotkey { at } => (TurnKind::HintHotkey, *at),
+        };
+        let event = HintEvent {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind,
+            asked_at_sec: at,
+            question: String::new(),
+            short: String::new(),
+            details: String::new(),
+            state: HintState::Writing,
+        };
+        if kind == TurnKind::HintHotkey {
+            *lock(&self.last) = Some(event.clone());
+            on_event(&event);
+        }
+        event
+    }
+
     pub async fn answer<S, SFut>(
         &self,
         request: &Request,
+        lines: &[TranscriptSegment],
+        notes: &[Note],
+        setup: S,
+        mut on_event: impl FnMut(&HintEvent),
+    ) -> Option<AssistantTurn>
+    where
+        S: FnOnce() -> SFut,
+        SFut: Future<Output = StartSetup>,
+    {
+        let event = self.announce(request, &mut on_event);
+        self.answer_announced(request, event, lines, notes, setup, on_event).await
+    }
+
+    /// Ответ на запрос, событие которого уже выпустил `announce`: тот же id.
+    pub async fn answer_announced<S, SFut>(
+        &self,
+        request: &Request,
+        mut event: HintEvent,
         lines: &[TranscriptSegment],
         notes: &[Note],
         setup: S,
@@ -200,24 +262,13 @@ impl HintService {
             Request::Candidate { text, at } => (TurnKind::Hint, CANDIDATE_LABEL, text.as_str(), *at),
             Request::Hotkey { at } => (TurnKind::HintHotkey, HOTKEY_LABEL, HOTKEY_REQUEST, *at),
         };
-        let mut event = HintEvent {
-            id: uuid::Uuid::new_v4().to_string(),
-            kind,
-            asked_at_sec: at,
-            question: String::new(),
-            short: String::new(),
-            details: String::new(),
-            state: HintState::Writing,
-        };
-        let mut shown = false;
+        // Окно хоткея уже открыто событием `announce`.
+        let mut shown = kind == TurnKind::HintHotkey;
         let mut emit = |event: &HintEvent, shown: &mut bool| {
             *shown = true;
             *lock(&self.last) = Some(event.clone());
             on_event(event);
         };
-        if kind == TurnKind::HintHotkey {
-            emit(&event, &mut shown);
-        }
         let model = self.dialog.status().await.model.unwrap_or_default();
         let input = AskInput { label, question: text, asked_at: at, lines, notes };
         let result = self
@@ -320,6 +371,59 @@ mod slot_tests {
         };
         assert!(worker.await.is_err(), "паника дошла до задачи");
         assert!(service.offer(candidate("второй")), "воркера нет — запускать снова");
+    }
+
+    #[test]
+    fn a_dismissed_hint_does_not_reopen_the_window() {
+        let service = HintService::default();
+        assert!(service.begin_recording(service.epoch(), true, false));
+        let mut announced = Vec::new();
+        let first = service.announce(&Request::Hotkey { at: 3.0 }, |e| announced.push(e.clone()));
+        assert_eq!(announced, vec![first.clone()], "хоткей объявлен сразу");
+        assert!(service.should_show(&first));
+
+        service.dismiss_current();
+        let delta = HintEvent { short: "Так".into(), ..first.clone() };
+        assert!(!service.should_show(&delta), "дельты закрытой подсказки окно не открывают");
+        let done = HintEvent { state: HintState::Done, ..delta };
+        assert!(!service.should_show(&done));
+
+        let next = service.announce(&Request::Hotkey { at: 9.0 }, |_| {});
+        assert_ne!(next.id, first.id);
+        assert!(service.should_show(&next), "новая подсказка показывается");
+
+        // Новая запись забывает закрытую подсказку.
+        service.dismiss_current();
+        assert!(!service.should_show(&next));
+        assert!(service.begin_recording(service.epoch(), true, false));
+        assert!(service.should_show(&next));
+    }
+
+    #[test]
+    fn an_empty_candidate_never_opens_the_window() {
+        let service = HintService::default();
+        let event = |kind, state| HintEvent {
+            id: "x".into(),
+            kind,
+            asked_at_sec: 1.0,
+            question: String::new(),
+            short: String::new(),
+            details: String::new(),
+            state,
+        };
+        assert!(!service.should_show(&event(TurnKind::Hint, HintState::Empty)));
+        assert!(service.should_show(&event(TurnKind::HintHotkey, HintState::Empty)), "«вопросов не было» по хоткею");
+        assert!(service.should_show(&event(TurnKind::Hint, HintState::Writing)));
+    }
+
+    #[test]
+    fn a_candidate_is_not_announced() {
+        let service = HintService::default();
+        let mut announced = Vec::new();
+        let event = service.announce(&candidate("что такое индекс"), |e| announced.push(e.clone()));
+        assert!(announced.is_empty());
+        assert_eq!(event.state, HintState::Writing);
+        assert_eq!(service.last_event(), None);
     }
 }
 
@@ -435,6 +539,29 @@ mod tests {
         assert_eq!(turn.kind, TurnKind::HintHotkey);
         assert_eq!(events.first().unwrap().state, HintState::Writing, "окно открывается сразу");
         assert_eq!(service.counts(), (0, 1), "хоткей — не проверка кандидата");
+        service.dialog.stop().await;
+    }
+
+    #[tokio::test]
+    async fn an_announced_hotkey_keeps_its_id_to_the_end() {
+        let _policy = online();
+        let fake = FakeClaude::new("hint");
+        let service = HintService::default();
+        started(&service, ready(&fake)).await;
+        let request = Request::Hotkey { at: 7.0 };
+        let mut events = Vec::new();
+        // «Пишет» уходит до сброса живой речи, ответ — после, тем же id.
+        let announced = service.announce(&request, |e| events.push(e.clone()));
+        assert_eq!(events.len(), 1);
+        let turn = service
+            .answer_announced(&request, announced.clone(), &[], &[], no_setup(), |e| events.push(e.clone()))
+            .await
+            .unwrap();
+        assert_eq!(events.first().unwrap().state, HintState::Writing);
+        assert!(events.iter().all(|e| e.id == announced.id), "{events:?}");
+        assert_eq!(turn.id, announced.id);
+        assert_eq!(events.last().unwrap().state, HintState::Done);
+        assert_eq!(service.counts(), (0, 1));
         service.dialog.stop().await;
     }
 

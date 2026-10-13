@@ -44,31 +44,45 @@ pub fn parse(text: &str) -> Reply {
         return Reply::Hint(Hint { short: trimmed.to_string(), ..Hint::default() });
     }
     // Недописанный маркер в последней строке не должен попасть в раздел.
+    // Позиции ищутся в той же строке, которую потом режем: `to_uppercase`
+    // меняет длину в байтах у части символов (ſ → S, ﬁ → FI).
     let mut body = trimmed;
     if let Some(nl) = trimmed.rfind('\n') {
-        let last = upper[nl + 1..].trim();
-        if !last.is_empty() && markers.iter().any(|m| m.starts_with(last)) && markers.iter().any(|m| upper[..nl].contains(m)) {
-            body = trimmed[..nl].trim_end();
+        let head = &trimmed[..nl];
+        let last = trimmed[nl + 1..].trim().to_uppercase();
+        if !last.is_empty()
+            && markers.iter().any(|m| m.starts_with(last.as_str()))
+            && markers.iter().any(|m| find(head, m).is_some())
+        {
+            body = head.trim_end();
         }
     }
-    let upper = body.to_uppercase();
-    let question_at = find(&upper, QUESTION);
-    let short_at = find(&upper, SHORT);
-    let details_at = find(&upper, DETAILS);
+    let question_at = find(body, QUESTION);
+    let short_at = find(body, SHORT);
+    let details_at = find(body, DETAILS);
     let question = question_at
-        .map(|at| section(body, at + QUESTION.len(), short_at.or(details_at).unwrap_or(body.len())))
+        .map(|(_, end)| section(body, end, short_at.or(details_at).map_or(body.len(), |(start, _)| start)))
         .unwrap_or_default();
     let short = short_at
-        .map(|at| section(body, at + SHORT.len(), details_at.filter(|d| *d > at).unwrap_or(body.len())))
+        .map(|(at, end)| section(body, end, details_at.map(|(d, _)| d).filter(|d| *d > at).unwrap_or(body.len())))
         .unwrap_or_default();
-    let details = details_at.map(|at| section(body, at + DETAILS.len(), body.len())).unwrap_or_default();
+    let details = details_at.map(|(_, end)| section(body, end, body.len())).unwrap_or_default();
     Reply::Hint(Hint { question, short, details })
 }
 
-/// Байтовая позиция маркера в тексте. `to_uppercase` у кириллицы и ASCII не
-/// меняет длину в байтах, поэтому позиция в `upper` годится и для исходника.
-fn find(upper: &str, marker: &str) -> Option<usize> {
-    upper.find(marker)
+/// Первое вхождение маркера без учёта регистра: байтовые границы
+/// `(начало, конец)` совпадения в самом `text`, а не в его верхнем регистре.
+fn find(text: &str, marker: &str) -> Option<(usize, usize)> {
+    text.char_indices().find_map(|(start, _)| {
+        let mut rest = text[start..].char_indices();
+        for m in marker.chars() {
+            let (_, c) = rest.next()?;
+            if !c.to_uppercase().eq(std::iter::once(m)) {
+                return None;
+            }
+        }
+        Some((start, rest.next().map_or(text.len(), |(offset, _)| start + offset)))
+    })
 }
 
 fn section(text: &str, from: usize, to: usize) -> String {
@@ -136,5 +150,16 @@ mod tests {
     fn unfinished_marker_does_not_leak() {
         assert_eq!(parse("ВОПРОС: Что такое индекс?\nКОРО"), hint("Что такое индекс?", "", ""));
         assert_eq!(parse("ВОПРОС: Что?\nКОРОТКО: Так.\nПОДРО"), hint("Что?", "Так.", ""));
+    }
+
+    #[test]
+    fn letters_that_change_length_in_upper_case_do_not_break_slicing() {
+        // ſ в верхнем регистре — S: два байта становятся одним.
+        assert_eq!(parse("ВОПРОС: ſſſ\nКОРО"), hint("ſſſ", "", ""));
+        // ﬁ → FI и ı → I тоже меняют длину; в разделах — исходный текст.
+        assert_eq!(
+            parse("ВОПРОС: ﬁnal ıd?\nКОРОТКО: ﬁ ı ſ.\nПОДРОБНО:\nоﬁс ı"),
+            hint("ﬁnal ıd?", "ﬁ ı ſ.", "оﬁс ı")
+        );
     }
 }

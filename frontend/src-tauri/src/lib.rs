@@ -603,15 +603,25 @@ pub fn run() {
                         let settings = crate::database::repositories::setting::SettingsRepository::get_hint_settings(pool)
                             .await
                             .unwrap_or_default();
-                        if !handle.state::<HintService>().begin_recording(epoch, settings.enabled, settings.mic) {
+                        // Диалог подсказок бывает только у Claude Code: с другим
+                        // провайдером подсказки не включаются и клавиша не занимается.
+                        let enabled = settings.enabled
+                            && crate::claude_session::commands::uses_dialog_provider(pool).await;
+                        if !handle.state::<HintService>().begin_recording(epoch, enabled, settings.mic) {
                             // Запись уже остановлена; «запускается» диалога снял request_stop.
                             return;
                         }
-                        if settings.enabled && !crate::network_policy::local_only() {
+                        if enabled && !crate::network_policy::local_only() {
                             // Без await после begin_recording: устаревший старт не регистрирует клавишу.
                             let error = crate::hints::hotkey::register(&handle, &settings.hotkey).err();
                             if let Some(error) = &error {
                                 log::warn!("Подсказки: {error}");
+                            }
+                            // Остановка могла пройти между begin_recording и регистрацией:
+                            // её unregister_all тогда был раньше нашей клавиши.
+                            if handle.state::<HintService>().epoch() != epoch {
+                                crate::hints::hotkey::unregister_all(&handle);
+                                return;
                             }
                             handle.state::<HintService>().set_hotkey_error(error);
                         }

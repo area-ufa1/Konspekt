@@ -23,3 +23,10 @@ test('events upsert by id in time order; empty ones are not kept', () => {
   assert.deepEqual(list.map((h) => [h.id, h.state, h.short]), [['a', 'done', 's'], ['b', 'done', 'готово']])
   assert.deepEqual(applyHintEvent(list, ev('c', 100, 'empty')), list)
 })
+
+test('an empty result removes its own writing card', () => {
+  let list = applyHintEvent([], ev('a', 30))
+  list = applyHintEvent(list, ev('x', 60, 'writing', { kind: 'hint-hotkey' }))
+  list = applyHintEvent(list, ev('x', 60, 'empty', { kind: 'hint-hotkey' }))
+  assert.deepEqual(list.map((h) => h.id), ['a'])
+})

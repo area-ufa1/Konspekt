@@ -47,7 +47,15 @@ export function HintsPanel() {
     };
   }, []);
 
-  const notice = status && !status.enabled ? t('off') : status && !status.available ? status.reason : null;
+  // Выключены в настройках — «выключены»; включены, но эта запись их не
+  // поддерживает (другой провайдер, причина пустая) — «недоступны».
+  const notice = !status
+    ? null
+    : !status.enabled && (status.available || status.reason)
+      ? t('off')
+      : !status.available
+        ? status.reason || t('unavailable')
+        : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">

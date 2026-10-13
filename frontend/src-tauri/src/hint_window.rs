@@ -64,8 +64,10 @@ fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<tauri::WebviewWindow<
     Ok(window)
 }
 
+/// ✕/Esc в окне: прячет его, и дельты текущей подсказки окно уже не открывают.
 #[tauri::command]
 pub fn hint_window_hide<R: Runtime>(app: AppHandle<R>) {
+    app.state::<crate::hints::service::HintService>().dismiss_current();
     hide(&app);
 }
 

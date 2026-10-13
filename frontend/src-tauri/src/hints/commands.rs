@@ -59,6 +59,23 @@ pub fn submit<R: Runtime>(app: &AppHandle<R>, request: Request) {
 async fn process<R: Runtime>(app: &AppHandle<R>, request: Request) {
     let Some(state) = app.try_state::<crate::state::AppState>() else { return };
     let pool = state.db_manager.pool();
+    let service = app.state::<HintService>();
+    let on_event = |event: &HintEvent| {
+        // Запись остановлена — окно спрятано; поздние события (в том числе
+        // «остановлено» от самого диалога) его снова не открывают.
+        if !service.is_active() {
+            return;
+        }
+        // Сначала событие, потом показ: спрятанное окно не мелькнёт прошлой
+        // карточкой. Отвергнутый кандидат и закрытая владельцем подсказка окно
+        // не открывают, но событие получают — окно по нему прячется.
+        let _ = app.emit("hint-update", event);
+        if service.should_show(event) {
+            crate::hint_window::show(app);
+        }
+    };
+    // «Пишет» по хоткею — сразу, до сброса живой речи.
+    let event = service.announce(&request, on_event);
     if matches!(request, Request::Hotkey { .. }) {
         // Как вопрос «Ассистенту»: дождаться только что сказанного. В лог —
         // только исход и время.
@@ -69,23 +86,8 @@ async fn process<R: Runtime>(app: &AppHandle<R>, request: Request) {
     let lines = crate::audio::recording_commands::get_transcript_history().await.unwrap_or_default();
     let notes = crate::audio::transcript_journal::current_notes();
     let settings = SettingsRepository::get_hint_settings(pool).await.unwrap_or_default();
-    let service = app.state::<HintService>();
     let turn = service
-        .answer(&request, &lines, &notes, || setup_for_hints(pool, &settings), |event| {
-            // Запись остановлена — окно спрятано; поздние события (в том числе
-            // «остановлено» от самого диалога) его снова не открывают.
-            if !service.is_active() {
-                return;
-            }
-            // Кандидат, оказавшийся «НЕТ», окно не открывает (иначе мелькнёт
-            // прошлая карточка); событие всё равно уходит — окно по нему прячется.
-            let rejected_candidate =
-                event.state == super::service::HintState::Empty && !matches!(event.kind, TurnKind::HintHotkey);
-            if !rejected_candidate {
-                crate::hint_window::show(app);
-            }
-            let _ = app.emit("hint-update", event);
-        })
+        .answer_announced(&request, event, &lines, &notes, || setup_for_hints(pool, &settings), on_event)
         .await;
     if let Some(turn) = turn {
         if let Err(error) = crate::audio::transcript_journal::add_turn(&turn) {

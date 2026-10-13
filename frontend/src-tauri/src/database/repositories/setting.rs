@@ -26,6 +26,12 @@ pub struct SaveTranscriptConfigRequest {
 
 pub const DEFAULT_HINT_HOTKEY: &str = "Ctrl+Shift+Space";
 
+const SAVE_HINT_SETTINGS_SQL: &str =
+    "INSERT INTO settings (id, provider, model, whisperModel, claudeHintsEnabled, claudeHintsMic, claudeHintsHotkey) \
+     VALUES ('1', 'claude-cli', 'sonnet', 'large-v3', ?, ?, ?) \
+     ON CONFLICT(id) DO UPDATE SET claudeHintsEnabled = excluded.claudeHintsEnabled, \
+     claudeHintsMic = excluded.claudeHintsMic, claudeHintsHotkey = excluded.claudeHintsHotkey";
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HintSettings {
@@ -474,9 +480,7 @@ impl SettingsRepository {
     }
 
     pub async fn save_hint_settings(pool: &SqlitePool, settings: &HintSettings) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO settings (id, provider, model, whisperModel, claudeHintsEnabled, claudeHintsMic, claudeHintsHotkey)              VALUES ('1', 'claude-cli', 'sonnet', 'large-v3', ?, ?, ?)              ON CONFLICT(id) DO UPDATE SET claudeHintsEnabled = excluded.claudeHintsEnabled,              claudeHintsMic = excluded.claudeHintsMic, claudeHintsHotkey = excluded.claudeHintsHotkey",
-        )
+        sqlx::query(SAVE_HINT_SETTINGS_SQL)
         .bind(settings.enabled as i64)
         .bind(settings.mic as i64)
         .bind(settings.hotkey.trim())
@@ -558,6 +562,12 @@ mod tests {
         let wanted = HintSettings { enabled: true, mic: true, hotkey: "Ctrl+Alt+H".into() };
         SettingsRepository::save_hint_settings(&pool, &wanted).await.unwrap();
         assert_eq!(SettingsRepository::get_hint_settings(&pool).await.unwrap(), wanted);
+    }
+
+    #[test]
+    fn hint_settings_sql_has_single_spaces() {
+        assert!(!SAVE_HINT_SETTINGS_SQL.contains("  "), "{SAVE_HINT_SETTINGS_SQL}");
+        assert!(SAVE_HINT_SETTINGS_SQL.contains("claudeHintsHotkey) VALUES ('1'"));
     }
 
     #[tokio::test]

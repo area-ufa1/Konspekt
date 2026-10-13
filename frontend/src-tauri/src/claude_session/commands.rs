@@ -23,13 +23,24 @@ pub async fn setup_for_recording(pool: &sqlx::SqlitePool) -> StartSetup {
     setup_with_prompt(pool, SYSTEM_PROMPT).await
 }
 
+/// Диалог записи бывает только у провайдера Claude Code.
+pub fn has_dialog(provider: &str) -> bool {
+    provider == "claude-cli"
+}
+
+/// Выбран ли в настройках провайдер с диалогом записи (то же решение, что
+/// принимает `setup_with_prompt`).
+pub async fn uses_dialog_provider(pool: &sqlx::SqlitePool) -> bool {
+    matches!(SettingsRepository::get_model_config(pool).await, Ok(Some(config)) if has_dialog(&config.provider))
+}
+
 /// Что делать с диалогом записи при её старте — по провайдеру из настроек;
 /// `system_prompt` у ассистента и у подсказок свой.
 pub async fn setup_with_prompt(pool: &sqlx::SqlitePool, system_prompt: &str) -> StartSetup {
     let Ok(Some(config)) = SettingsRepository::get_model_config(pool).await else {
         return StartSetup::Unavailable("Модель ИИ не выбрана: Настройки → Саммари".into());
     };
-    if config.provider != "claude-cli" {
+    if !has_dialog(&config.provider) {
         // Claude по ключу отвечает разовыми вызовами — диалог не нужен; остальным ассистент недоступен.
         return StartSetup::Unavailable(String::new());
     }

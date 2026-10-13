@@ -32,7 +32,8 @@ export function hintFromTurn(turn: AssistantTurn): HintEvent {
 }
 
 export function applyHintEvent(list: HintEvent[], event: HintEvent): HintEvent[] {
-  if (event.state === 'empty') return list;
   const rest = list.filter((hint) => hint.id !== event.id);
+  // «Пустой» итог не хранится и убирает своё «пишет», если оно было.
+  if (event.state === 'empty') return rest.length === list.length ? list : rest;
   return [...rest, event].sort((a, b) => a.askedAtSec - b.askedAtSec);
 }
