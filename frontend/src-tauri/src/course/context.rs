@@ -73,6 +73,10 @@ fn neutralize(text: &str) -> String {
     out
 }
 
+fn lecture_piece(lecture: &Lecture) -> String {
+    format!("<lecture date=\"{}\">\n{}\n</lecture>", escape(&lecture.date), neutralize(&lecture.text))
+}
+
 /// Чистая сборка: порядок и потолок. `lectures` — от старых к новым. Ничего не
 /// влезло или нечего класть — `None`.
 pub fn compose(subject: &str, docs: &[Doc], lectures: &[Lecture], cap: usize) -> Option<CourseBlock> {
@@ -109,7 +113,7 @@ pub fn compose(subject: &str, docs: &[Doc], lectures: &[Lecture], cap: usize) ->
     let mut kept_lectures: Vec<String> = Vec::new();
     let mut dropped_summaries = 0;
     for lecture in lectures.iter().rev() {
-        let piece = format!("<lecture date=\"{}\">\n{}\n</lecture>", escape(&lecture.date), neutralize(&lecture.text));
+        let piece = lecture_piece(lecture);
         let cost = estimate_tokens(&piece) + estimate_tokens("\n\n");
         if cost <= left {
             left -= cost;
@@ -212,6 +216,15 @@ async fn load_inner(
         }
     }
 
+    let lectures = load_lectures(pool, client_id, exclude_meeting).await?;
+    Ok(compose(&subject, &docs, &lectures, CAP_TOKENS))
+}
+
+async fn load_lectures(
+    pool: &SqlitePool,
+    client_id: &str,
+    exclude_meeting: Option<&str>,
+) -> Result<Vec<Lecture>, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT m.created_at, s.result FROM meetings m \
          JOIN summary_processes s ON s.meeting_id = m.id \
@@ -232,8 +245,23 @@ async fn load_inner(
             lectures.push(Lecture { date: created_at.chars().take(10).collect(), text });
         }
     }
+    Ok(lectures)
+}
 
-    Ok(compose(&subject, &docs, &lectures, CAP_TOKENS))
+/// Все выжимки предмета без потолка: сколько их и сколько токенов они заняли бы.
+/// Для полосы окна материалов; запертый архив — `(0, 0)`.
+pub async fn summary_totals(pool: &SqlitePool, client_id: &str) -> Result<(usize, usize), String> {
+    match load_lectures(pool, client_id, None).await {
+        Ok(lectures) => {
+            let tokens = lectures
+                .iter()
+                .map(|lecture| estimate_tokens(&lecture_piece(lecture)) + estimate_tokens("\n\n"))
+                .sum();
+            Ok((lectures.len(), tokens))
+        }
+        Err(sqlx::Error::Decode(_)) => Ok((0, 0)),
+        Err(error) => Err(format!("Не удалось собрать материалы курса: {error}")),
+    }
 }
 
 #[cfg(test)]
@@ -384,5 +412,28 @@ mod tests {
         }
         assert_eq!(load(&pool, "c2", None).await.unwrap().map(|b| (b.files, b.summaries)), Some((0, 1)));
         assert_eq!(load(&pool, "nobody", None).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn summary_totals_are_not_capped() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO clients (id, display_name, normalized_name, created_at, updated_at) VALUES ('c1', ?, 'п', 'now', 'now')")
+            .bind(fields::seal(CLIENT_DISPLAY_NAME, "П").unwrap())
+            .execute(&pool).await.unwrap();
+        let big = "слово ".repeat(60_000);
+        let json = format!("{{\"markdown\":\"{big}\"}}");
+        for (id, created) in [("m1", "2026-10-07T10:00:00Z"), ("m2", "2026-10-08T10:00:00Z")] {
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, client_id) VALUES (?, 't', ?, ?, 'c1')")
+                .bind(id).bind(created).bind(created).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES (?, 'completed', ?, ?, ?)")
+                .bind(id).bind(created).bind(created).bind(fields::seal(SUMMARY_RESULT, &json).unwrap())
+                .execute(&pool).await.unwrap();
+        }
+        // Две выжимки по ~60k токенов не влезают в потолок вместе, но в полосе учитываются обе.
+        let (count, tokens) = summary_totals(&pool, "c1").await.unwrap();
+        assert_eq!(count, 2);
+        assert!(tokens > CAP_TOKENS, "{tokens}");
+        assert!(load(&pool, "c1", None).await.unwrap().unwrap().summaries < 2);
     }
 }

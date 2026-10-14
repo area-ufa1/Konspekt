@@ -208,13 +208,14 @@ pub async fn insert_file(pool: &SqlitePool, file: &CourseFile) -> Result<(), sql
     Ok(())
 }
 
-/// Все поля, кроме `id` и `client_id`.
+/// Все поля, кроме `id`, `client_id` и `use_flag` (галочку меняет только `set_use`:
+/// фоновая работа держит копию строки и не должна затирать выбор владельца).
 pub async fn update_file(pool: &SqlitePool, file: &CourseFile) -> Result<(), sqlx::Error> {
     let name = fields::seal(COURSE_FILE_NAME, &file.name)?;
     let folder_path = fields::seal_opt(COURSE_FILE_PATH, file.folder_path.as_deref())?;
     sqlx::query(
         "UPDATE course_files SET name = ?, kind = ?, source = ?, folder_path = ?, size = ?, \
-         modified = ?, hash = ?, use_flag = ?, state = ?, error = ?, tokens = ?, added_at = ? \
+         modified = ?, hash = ?, state = ?, error = ?, tokens = ?, added_at = ? \
          WHERE id = ?",
     )
     .bind(name)
@@ -224,7 +225,6 @@ pub async fn update_file(pool: &SqlitePool, file: &CourseFile) -> Result<(), sql
     .bind(file.size)
     .bind(&file.modified)
     .bind(&file.hash)
-    .bind(file.use_flag as i64)
     .bind(file.state.as_str())
     .bind(&file.error)
     .bind(file.tokens)
@@ -233,6 +233,27 @@ pub async fn update_file(pool: &SqlitePool, file: &CourseFile) -> Result<(), sql
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Галочка «использовать» одним запросом: не трогает остальные поля строки.
+pub async fn set_use(pool: &SqlitePool, file_id: &str, use_flag: bool) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE course_files SET use_flag = ? WHERE id = ?")
+        .bind(use_flag as i64)
+        .bind(file_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn file_exists(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    file_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM course_files WHERE id = ?")
+        .bind(file_id)
+        .fetch_optional(&mut **transaction)
+        .await?;
+    Ok(found.is_some())
 }
 
 /// Файл и его страницы: внешние ключи включены не на всех соединениях.
@@ -260,6 +281,10 @@ pub async fn replace_pages(
         .map(|page| fields::seal(COURSE_PAGE_TEXT, &page.text))
         .collect::<Result<Vec<_>, _>>()?;
     let mut transaction = pool.begin().await?;
+    // Файл удалили, пока его читали: страницы-сироты не пишем.
+    if !file_exists(&mut transaction, file_id).await? {
+        return Ok(());
+    }
     sqlx::query("DELETE FROM course_pages WHERE file_id = ?")
         .bind(file_id)
         .execute(&mut *transaction)
@@ -488,7 +513,7 @@ mod tests {
         assert!(files_waiting_claude(&pool).await.unwrap().is_empty());
 
         file.state = FileState::WaitsClaude;
-        file.use_flag = false;
+        set_use(&pool, "f1", false).await.unwrap();
         file.name = "b.pdf".into();
         file.tokens = 77;
         update_file(&pool, &file).await.unwrap();
@@ -512,5 +537,28 @@ mod tests {
     #[test]
     fn course_settings_sql_has_single_spaces() {
         assert!(!SAVE_SETTINGS_SQL.contains("  "), "{SAVE_SETTINGS_SQL}");
+    }
+
+    #[tokio::test]
+    async fn update_file_keeps_the_use_flag() {
+        let pool = pool_with_client("c1").await;
+        let mut stale = sample_file("f1", "c1", "a.pdf");
+        insert_file(&pool, &stale).await.unwrap();
+        set_use(&pool, "f1", false).await.unwrap();
+        // Копия строки в руках фоновой работы ещё со старой галочкой.
+        stale.tokens = 5;
+        update_file(&pool, &stale).await.unwrap();
+        let file = &list_files(&pool, "c1").await.unwrap()[0];
+        assert_eq!((file.use_flag, file.tokens), (false, 5));
+    }
+
+    #[tokio::test]
+    async fn pages_of_a_deleted_file_are_not_written() {
+        let pool = pool_with_client("c1").await;
+        insert_file(&pool, &sample_file("f1", "c1", "a.pdf")).await.unwrap();
+        delete_file(&pool, "f1").await.unwrap();
+        let page = StoredPage { number: 1, text: "сирота".into(), by_claude: false, waits_claude: false };
+        replace_pages(&pool, "f1", &[page]).await.unwrap();
+        assert!(pages(&pool, "f1").await.unwrap().is_empty());
     }
 }

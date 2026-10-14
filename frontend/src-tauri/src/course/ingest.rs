@@ -510,9 +510,7 @@ mod tests {
         let a = dir.path().join("a.txt");
         let same = std::fs::read(&a).unwrap();
         let before = store::list_files(&pool, "c1").await.unwrap().into_iter().find(|f| f.name == "a.txt").unwrap();
-        let mut flagged = before.clone();
-        flagged.use_flag = false;
-        store::update_file(&pool, &flagged).await.unwrap();
+        store::set_use(&pool, &before.id, false).await.unwrap();
         store::set_page_text(&pool, &before.id, 1, "Поправлено Claude", true).await.unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         std::fs::write(&a, &same).unwrap();

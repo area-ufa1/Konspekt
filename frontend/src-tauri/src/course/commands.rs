@@ -131,12 +131,18 @@ pub async fn course_live_status() -> Result<Option<CourseBlock>, String> {
 
 const ARCHIVE_LOCKED: &str = "Архив заперт — сначала откройте его";
 
+/// Запертый архив: запись отказывает (`Encode`), чтение не расшифровывает (`Decode`).
 fn store_error(error: sqlx::Error) -> String {
-    if crate::database::fields::is_archive_locked(&error) {
+    if crate::database::fields::is_archive_locked(&error) || matches!(error, sqlx::Error::Decode(_)) {
         ARCHIVE_LOCKED.to_string()
     } else {
         format!("Не удалось обратиться к материалам: {error}")
     }
+}
+
+/// До постановки в очередь: запертый архив отвечает сразу, а не молча в лог.
+fn ensure_writable() -> Result<(), String> {
+    crate::database::fields::seal(crate::database::fields::COURSE_FILE_NAME, "").map(|_| ()).map_err(store_error)
 }
 
 #[derive(Debug, Serialize)]
@@ -157,16 +163,6 @@ struct Changed {
     client_id: String,
 }
 
-/// Токены раздела прошлых пар внутри собранного блока.
-fn lectures_tokens(text: &str) -> usize {
-    const OPEN: &str = "<past_lectures>";
-    const CLOSE: &str = "</past_lectures>";
-    let Some(start) = text.find(OPEN) else { return 0 };
-    let section = &text[start..];
-    let end = section.find(CLOSE).map_or(section.len(), |at| at + CLOSE.len());
-    super::quality::estimate_tokens(&section[..end])
-}
-
 /// Модель чтения картинок: модель выжимки, если провайдер — claude-cli, иначе `sonnet`.
 fn reading_model(provider: &str, model: &str) -> String {
     if provider == "claude-cli" && !model.trim().is_empty() {
@@ -184,16 +180,16 @@ pub async fn overview(pool: &SqlitePool, client_id: &str) -> Result<CourseOvervi
         Some(path) => !tokio::fs::metadata(path).await.map(|m| m.is_dir()).unwrap_or(false),
         None => false,
     };
-    let (summaries, summary_tokens) = match context::load(pool, client_id, None).await? {
-        Some(block) => (block.summaries, lectures_tokens(&block.text)),
-        None => (0, 0),
-    };
+    // Без потолка: полоса должна краснеть и тогда, когда выжимки в блок не влезли.
+    let (summaries, summary_tokens) = context::summary_totals(pool, client_id).await?;
     let material_tokens = files.iter().filter(|file| file.use_flag).map(|file| file.tokens.max(0) as usize).sum();
     Ok(CourseOverview { files, folder, folder_unreachable, summaries, summary_tokens, material_tokens, cap: CAP_TOKENS })
 }
 
 /// Одна фоновая работа на приложение: чтение файлов и Claude идут по очереди.
 static WORK: AsyncMutex<()> = AsyncMutex::const_new(());
+/// В очереди уже стоит дочитывание из списка: ещё одно не ставим.
+static WAITING_QUEUED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 enum Job {
     Add(Vec<String>),
@@ -215,9 +211,13 @@ fn progress<R: Runtime>(app: &AppHandle<R>) -> impl Fn(Progress) + '_ {
 }
 
 fn queue<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, client_id: String, job: Job) {
+    let waiting = matches!(job, Job::Waiting);
     tauri::async_runtime::spawn(async move {
         let _turn = WORK.lock().await;
         run(&app, &pool, &client_id, job).await;
+        if waiting {
+            WAITING_QUEUED.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
     });
 }
 
@@ -265,7 +265,7 @@ async fn run<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client_id: &str,
     let read = read_pictures(app, pool, client_id).await;
     // Из списка (`Waiting`) — только если что-то прочиталось: иначе отказ Claude
     // зациклил бы «изменилось → обновить список → дочитать».
-    if explicit || read > 0 {
+    if explicit || read {
         notify(app, client_id);
     }
 }
@@ -279,18 +279,29 @@ async fn file_by_id(pool: &SqlitePool, file_id: &str) -> Result<Option<CourseFil
     Ok(store::list_files(pool, &client_id).await?.into_iter().find(|file| file.id == file_id))
 }
 
-/// Дочитывает страницы-картинки предмета через Claude; число прочитанных страниц.
+/// Что видно владельцу у ждущих файлов: если оно сменилось, окну есть что перерисовать.
+fn waiting_signature(files: &[CourseFile]) -> Vec<(String, FileState, Option<String>, i64)> {
+    files
+        .iter()
+        .filter(|file| file.state == FileState::WaitsClaude)
+        .map(|file| (file.id.clone(), file.state, file.error.clone(), file.pages_waiting))
+        .collect()
+}
+
+/// Дочитывает страницы-картинки предмета через Claude; `true`, если что-то изменилось.
 /// Отказ Claude (вход, лимит, «Только этот компьютер») останавливает чтение: файлы остаются в ожидании.
-async fn read_pictures<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client_id: &str) -> usize {
+async fn read_pictures<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client_id: &str) -> bool {
     if crate::network_policy::local_only() {
-        return 0;
+        return false;
     }
-    let waiting: Vec<CourseFile> = match store::list_files(pool, client_id).await {
-        Ok(files) => files.into_iter().filter(|file| file.state == FileState::WaitsClaude).collect(),
-        Err(_) => return 0,
+    let all = match store::list_files(pool, client_id).await {
+        Ok(files) => files,
+        Err(_) => return false,
     };
+    let before = waiting_signature(&all);
+    let waiting: Vec<CourseFile> = all.into_iter().filter(|file| file.state == FileState::WaitsClaude).collect();
     if waiting.is_empty() {
-        return 0;
+        return false;
     }
     let cli_path = SettingsRepository::get_claude_cli_path(pool).await.ok().flatten();
     let model = match SettingsRepository::get_model_config(pool).await {
@@ -316,7 +327,9 @@ async fn read_pictures<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client
             break;
         }
     }
-    read
+    // Сигнатура ловит и перемену без прочитанных страниц (оригинал пропал или изменился).
+    let after = store::list_files(pool, client_id).await.map(|files| waiting_signature(&files)).unwrap_or_default();
+    read > 0 || before != after
 }
 
 #[tauri::command]
@@ -327,7 +340,10 @@ pub async fn course_list<R: Runtime>(
 ) -> Result<CourseOverview, String> {
     let pool = state.db_manager.pool();
     let view = overview(pool, &client_id).await?;
-    if !crate::network_policy::local_only() && view.files.iter().any(|file| file.state == FileState::WaitsClaude) {
+    if !crate::network_policy::local_only()
+        && view.files.iter().any(|file| file.state == FileState::WaitsClaude)
+        && !WAITING_QUEUED.swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
         queue(app, pool.clone(), client_id, Job::Waiting);
     }
     Ok(view)
@@ -340,6 +356,7 @@ pub async fn course_add_files<R: Runtime>(
     client_id: String,
     paths: Vec<String>,
 ) -> Result<(), String> {
+    ensure_writable()?;
     if !paths.is_empty() {
         queue(app, state.db_manager.pool().clone(), client_id, Job::Add(paths));
     }
@@ -354,11 +371,11 @@ pub async fn course_set_use<R: Runtime>(
     use_flag: bool,
 ) -> Result<(), String> {
     let pool = state.db_manager.pool();
-    let Some(mut file) = file_by_id(pool, &file_id).await.map_err(store_error)? else {
+    let Some(file) = file_by_id(pool, &file_id).await.map_err(store_error)? else {
         return Err("Файл не найден".to_string());
     };
-    file.use_flag = use_flag;
-    store::update_file(pool, &file).await.map_err(store_error)?;
+    // Одним запросом и без очереди: окно не ждёт долгую работу и не затирает её результат.
+    store::set_use(pool, &file_id, use_flag).await.map_err(store_error)?;
     notify(&app, &file.client_id);
     Ok(())
 }
@@ -388,6 +405,10 @@ pub async fn course_reread<R: Runtime>(
     let Some(file) = file_by_id(pool, &file_id).await.map_err(store_error)? else {
         return Err("Файл не найден".to_string());
     };
+    if file.folder_path.is_none() {
+        return Err("У файла нет пути на диске — добавьте его снова".to_string());
+    }
+    ensure_writable()?;
     queue(app, pool.clone(), file.client_id, Job::Reread(file_id));
     Ok(())
 }
@@ -420,6 +441,7 @@ pub async fn course_refresh<R: Runtime>(
     state: State<'_, crate::state::AppState>,
     client_id: String,
 ) -> Result<(), String> {
+    ensure_writable()?;
     queue(app, state.db_manager.pool().clone(), client_id, Job::Sync);
     Ok(())
 }
@@ -578,12 +600,24 @@ mod tests {
     }
 
     #[test]
-    fn lectures_tokens_counts_only_the_lectures_section() {
-        assert_eq!(lectures_tokens("<course_materials>x</course_materials>"), 0);
-        let text = "<course_materials>слово слово</course_materials>\n\n<past_lectures>\n<lecture date=\"d\">итог</lecture>\n</past_lectures>\n\nинструкция";
-        let n = lectures_tokens(text);
-        assert!(n > 0);
-        assert!(n < super::super::quality::estimate_tokens(text));
+    fn a_locked_archive_reads_and_writes_give_the_russian_refusal() {
+        let decode = sqlx::Error::Decode("архив заперт".into());
+        assert_eq!(store_error(decode), ARCHIVE_LOCKED);
+        let encode = sqlx::Error::Encode(Box::new(crate::database::fields::ArchiveLocked { table: "t", column: "c" }));
+        assert_eq!(store_error(encode), ARCHIVE_LOCKED);
+        assert!(store_error(sqlx::Error::RowNotFound).starts_with("Не удалось"));
+    }
+
+    #[test]
+    fn only_a_changed_waiting_file_counts_as_a_change() {
+        let mut waiting = course_file("a", 10, true);
+        waiting.state = FileState::WaitsClaude;
+        waiting.pages_waiting = 2;
+        let before = waiting_signature(std::slice::from_ref(&waiting));
+        assert_eq!(before, waiting_signature(std::slice::from_ref(&waiting)));
+        waiting.error = Some("оригинал недоступен".into());
+        assert_ne!(before, waiting_signature(&[waiting]));
+        assert!(waiting_signature(&[course_file("b", 1, true)]).is_empty());
     }
 
     #[test]
