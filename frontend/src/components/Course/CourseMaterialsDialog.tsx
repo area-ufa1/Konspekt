@@ -10,7 +10,8 @@ import { MoreVertical } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
-import { SUPPORTED, capState, formatTokens, isSupported } from '@/lib/course';
+import { isAudioPath } from '@/constants/audioFormats';
+import { SUPPORTED, capState, isSupported, setCourseDropActive, tokensText } from '@/lib/course';
 import type { CourseFile, CourseOverview } from '@/lib/course';
 import { CourseTextViewer } from './CourseTextViewer';
 
@@ -47,8 +48,10 @@ export function CourseMaterialsDialog({ clientId, subject, open, onOpenChange }:
   }, [clientId]);
 
   const addPaths = useCallback(async (paths: string[]) => {
-    const good = paths.filter(isSupported);
-    const bad = paths.filter((p) => !isSupported(p));
+    // Аудио — дело импорта записей, не материалов.
+    const rest = paths.filter((p) => !isAudioPath(p));
+    const good = rest.filter(isSupported);
+    const bad = rest.filter((p) => !isSupported(p));
     if (bad.length > 0) {
       const names = bad.map((p) => p.split(/[\\/]/).pop() ?? p).join(', ');
       toast.error(tRef.current('unsupported', { names }));
@@ -64,6 +67,7 @@ export function CourseMaterialsDialog({ clientId, subject, open, onOpenChange }:
   // Перетаскивание слушаем, только пока окно открыто.
   useEffect(() => {
     if (!open) return;
+    setCourseDropActive(true);
     setOverview(null);
     setProgress({});
     void load();
@@ -80,6 +84,7 @@ export function CourseMaterialsDialog({ clientId, subject, open, onOpenChange }:
       }),
     ];
     return () => {
+      setCourseDropActive(false);
       unlisteners.forEach((p) => void p.then((stop) => stop()));
     };
   }, [open, clientId, load, addPaths]);
@@ -103,7 +108,7 @@ export function CourseMaterialsDialog({ clientId, subject, open, onOpenChange }:
 
   const pickFiles = async () => {
     try {
-      const picked = await openDialog({ multiple: true, filters: [{ name: 'Материалы', extensions: [...SUPPORTED] }] });
+      const picked = await openDialog({ multiple: true, filters: [{ name: tRef.current('filterName'), extensions: [...SUPPORTED] }] });
       if (Array.isArray(picked)) await addPaths(picked);
       else if (typeof picked === 'string') await addPaths([picked]);
     } catch (error) {
@@ -159,7 +164,7 @@ export function CourseMaterialsDialog({ clientId, subject, open, onOpenChange }:
           {overview && bar && (
             <div className="border-t border-[var(--af-border)]">
               <div className="px-5 py-2.5 text-[13px] text-[var(--af-text-2)]">
-                {t('summaries', { count: overview.summaries, tokens: formatTokens(overview.summaryTokens) })}
+                {t('summaries', { count: overview.summaries, tokens: tokensText(overview.summaryTokens, t) })}
               </div>
               <div className="space-y-2.5 px-5 pb-4 pt-1">
                 <div className="flex h-2 overflow-hidden rounded-full bg-[var(--af-panel-2)]">
@@ -168,11 +173,11 @@ export function CourseMaterialsDialog({ clientId, subject, open, onOpenChange }:
                 </div>
                 <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-[13px] tabular-nums text-[var(--af-text-2)]">
                   {bar.over ? (
-                    <span className="text-red-500">{t('over', { used: formatTokens(used), cap: formatTokens(overview.cap, false) })}</span>
+                    <span className="text-red-500">{t('over', { used: tokensText(used, t), cap: tokensText(overview.cap, t, false) })}</span>
                   ) : (
-                    <span>{t('total', { used: formatTokens(used), cap: formatTokens(overview.cap, false) })}</span>
+                    <span>{t('total', { used: tokensText(used, t), cap: tokensText(overview.cap, t, false) })}</span>
                   )}
-                  <span>{t('split', { materials: formatTokens(overview.materialTokens), summaries: formatTokens(overview.summaryTokens) })}</span>
+                  <span>{t('split', { materials: tokensText(overview.materialTokens, t), summaries: tokensText(overview.summaryTokens, t) })}</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <button type="button" onClick={() => void pickFiles()}
@@ -206,16 +211,16 @@ function FileRow({ file, progress, onUse, onView, onReread, onRemove }: {
   if (file.state === 'ready') badge = { text: t('stateReady'), cls: 'text-emerald-500' };
   else if (file.state === 'waits-claude') badge = { text: t('stateWaits', { count: file.pagesWaiting }), cls: 'text-amber-500' };
   else if (file.state === 'error') badge = { text: t('stateError', { message: file.error ?? '' }), cls: 'text-red-500' };
-  else badge = { text: t('stateReading', { done: progress?.done ?? 0, total: progress?.total ?? file.pages }), cls: 'text-[var(--af-accent)]' };
+  else badge = { text: progress && progress.total > 0 ? t('stateReading', { done: progress.done, total: progress.total }) : t('stateReadingPlain'), cls: 'text-[var(--af-accent)]' };
 
   return (
     <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-[var(--af-border)] px-5 py-2.5">
-      <Switch checked={file.useFlag} onCheckedChange={onUse} aria-label={file.name} />
+      <Switch checked={file.useFlag} onCheckedChange={onUse} aria-label={t('useAria', { name: file.name })} />
       <div className="min-w-0">
         <div className={`break-words text-sm ${file.useFlag ? 'text-[var(--af-text)]' : 'text-[var(--af-text-3)] line-through'}`}>{file.name}</div>
         <div className="mt-0.5 flex flex-wrap gap-x-2.5 gap-y-0.5 text-xs text-[var(--af-text-3)]">
           <span>{file.kind.toUpperCase()}{file.pages > 0 && ` · ${unit}`}</span>
-          {file.tokens > 0 && <span>{formatTokens(file.tokens)}</span>}
+          {file.tokens > 0 && <span>{t('tokensOf', { value: tokensText(file.tokens, t) })}</span>}
           <span className="rounded border border-[var(--af-border)] px-1.5 text-[11px]">{file.source === 'folder' ? t('sourceFolder') : t('sourceAdded')}</span>
           {file.pagesByClaude > 0 && <span>{t('byClaude', { count: file.pagesByClaude })}</span>}
           {!file.useFlag && <span>{t('notUsed')}</span>}
@@ -224,7 +229,7 @@ function FileRow({ file, progress, onUse, onView, onReread, onRemove }: {
       <span className={`whitespace-nowrap rounded-full border border-[var(--af-border)] px-2 py-0.5 text-xs ${badge.cls}`}>{badge.text}</span>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" aria-label={file.name} className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-[var(--af-hover)]">
+          <button type="button" aria-label={t('actionsAria', { name: file.name })} className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-[var(--af-hover)]">
             <MoreVertical className="h-4 w-4" />
           </button>
         </DropdownMenuTrigger>

@@ -15,7 +15,7 @@ export interface CourseFile {
   source: 'added' | 'folder';
   folderPath: string | null;
   size: number;
-  modified: number;
+  modified: string;
   hash: string;
   useFlag: boolean;
   state: 'reading' | 'waits-claude' | 'ready' | 'error';
@@ -62,14 +62,24 @@ export function isSupported(path: string): boolean {
   return (SUPPORTED as readonly string[]).includes(path.slice(dot + 1).toLowerCase());
 }
 
-/** 9800 → «~9,8 тыс.», 21000 → «~21 тыс.», 640 → «~640»; без тильды — для точных величин (потолок). */
-export function formatTokens(n: number, approx = true): string {
+/** 9800 → «~9,8 тыс.», 21000 → «~21 тыс.», 640 → «~640»; единица и десятичный знак приходят из словаря. */
+export function formatTokens(n: number, unit: string, decimal: string, approx = true): string {
   const mark = approx ? '~' : '';
   if (n < 1000) return `${mark}${Math.round(n)}`;
   const thousands = n / 1000;
-  const text = thousands >= 10 ? String(Math.round(thousands)) : thousands.toFixed(1).replace('.0', '').replace('.', ',');
-  return `${mark}${text} тыс.`;
+  const text = thousands >= 10 ? String(Math.round(thousands)) : thousands.toFixed(1).replace('.0', '').replace('.', decimal);
+  return `${mark}${text} ${unit}`;
 }
+
+/** То же, но единицу и разделитель берёт из словаря (`course.thousands`, `course.decimal`). */
+export function tokensText(n: number, t: Translate, approx = true): string {
+  return formatTokens(n, t('thousands'), t('decimal'), approx);
+}
+
+// Пока открыто окно материалов, документы, брошенные в приложение, — его дело, а не импорта аудио.
+let courseDropActive = false;
+export function setCourseDropActive(active: boolean): void { courseDropActive = active; }
+export function isCourseDropActive(): boolean { return courseDropActive; }
 
 /** Доли полосы в процентах; при перегрузе нормируются к сумме, чтобы полоса была заполнена целиком. */
 export function capState(materials: number, summaries: number, cap: number) {
@@ -92,7 +102,7 @@ export function statusLine(
     subject: block.subject,
     files: block.files,
     summaries: block.summaries,
-    tokens: formatTokens(block.tokens),
+    tokens: tokensText(block.tokens, t),
   });
   const dropped = block.droppedFiles + block.droppedSummaries;
   return dropped > 0 ? head + t('statusDropped', { count: dropped }) : head;

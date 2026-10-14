@@ -16,6 +16,12 @@ export const isAudioExtension = (ext: string): ext is AudioExtension =>{
   return (AUDIO_EXTENSIONS as readonly string[]).includes(ext);
 }
 
+/** Путь к аудиофайлу по расширению (без учёта регистра). */
+export const isAudioPath = (path: string): boolean => {
+  const ext = path.split('.').pop()?.toLowerCase();
+  return !!ext && isAudioExtension(ext);
+}
+
 /**
  * Human-readable format names for display
  */

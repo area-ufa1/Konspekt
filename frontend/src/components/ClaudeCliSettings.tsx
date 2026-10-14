@@ -92,7 +92,7 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
       });
     getCourseSettings()
       .then(setCourse)
-      .catch(() => setCourse({ inAssistant: true, inHints: true, inSummary: true }));
+      .catch((error) => setCourseError(typeof error === 'string' ? error : (error as Error)?.message || String(error)));
     invoke<boolean>('get_local_only_mode')
       .then(setLocalOnly)
       .catch(() => setLocalOnly(false));
@@ -310,7 +310,7 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
         </div>
       )}
 
-      {course && (
+      {(course || courseError) && (
         <div className="space-y-3">
           <div>
             <h4 className="text-sm font-medium">{tcourse('settingsTitle')}</h4>
@@ -324,8 +324,8 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
           ] as const).map(([field, label]) => (
             <div key={field} className="flex items-center justify-between gap-3">
               <Label htmlFor={`course-${field}`}>{tcourse(label)}</Label>
-              <Switch id={`course-${field}`} checked={course[field]}
-                onCheckedChange={(value) => void persistCourse({ ...course, [field]: value })} />
+              <Switch id={`course-${field}`} checked={course?.[field] ?? false} disabled={!course}
+                onCheckedChange={(value) => { if (course) void persistCourse({ ...course, [field]: value }); }} />
             </div>
           ))}
         </div>

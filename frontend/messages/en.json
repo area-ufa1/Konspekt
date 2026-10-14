@@ -1686,6 +1686,13 @@
     "loadFailed": "Could not load materials: {message}",
     "empty": "No materials yet",
     "close": "Close",
+    "thousands": "k",
+    "decimal": ".",
+    "filterName": "Materials",
+    "stateReadingPlain": "reading…",
+    "tokensOf": "{value} tokens",
+    "useAria": "Use: {name}",
+    "actionsAria": "Actions: {name}",
     "noPages": "No text"
   }
 }

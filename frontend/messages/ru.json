@@ -1686,6 +1686,13 @@
     "loadFailed": "Не удалось загрузить материалы: {message}",
     "empty": "Материалов пока нет",
     "close": "Закрыть",
+    "thousands": "тыс.",
+    "decimal": ",",
+    "filterName": "Материалы",
+    "stateReadingPlain": "читается…",
+    "tokensOf": "{value} токенов",
+    "useAria": "Использовать: {name}",
+    "actionsAria": "Действия: {name}",
     "noPages": "Текста нет"
   }
 }

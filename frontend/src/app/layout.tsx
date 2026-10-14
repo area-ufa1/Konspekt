@@ -35,7 +35,8 @@ import { RetranscriptionProvider } from '@/contexts/RetranscriptionContext'
 import { PostCallProvider } from '@/contexts/PostCallContext'
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
-import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
+import { isAudioExtension, isAudioPath, getAudioFormatsDisplayList } from '@/constants/audioFormats'
+import { isCourseDropActive } from '@/lib/course'
 import GlobalSearchDialog from '@/components/GlobalSearchDialog'
 import CrashReportDialog from '@/components/CrashReportDialog'
 import { getPendingCrashReport, type PendingCrashReport } from '@/services/crashReportService'
@@ -268,8 +269,8 @@ export default function RootLayout({
 
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
-    // Документы для материалов предмета обрабатывает их окно; здесь нужны только аудиофайлы.
-    if (!paths.some((p) => { const ext = p.split('.').pop()?.toLowerCase(); return !!ext && isAudioExtension(ext); })) return;
+    // Пока открыто окно материалов, документы обрабатывает оно; здесь нужны только аудиофайлы.
+    if (isCourseDropActive() && !paths.some(isAudioPath)) return;
 
     // Check if beta features are enabled (read from localStorage directly since we're outside ConfigProvider)
     const betaFeatures = loadBetaFeatures();
