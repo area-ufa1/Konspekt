@@ -58,6 +58,26 @@ mod tests {
     }
 
     #[test]
+    fn garbage_share_rule_trips_on_its_own() {
+        // 100 букв + 100 мусора: alnum = 100 (>= 80), доля букв 0.5 (>= 0.3), доля мусора 0.5 (> 0.3).
+        let letters = "б".repeat(100);
+        assert!(needs_reading(&(letters.clone() + &"\u{fffd}".repeat(100))));
+        assert!(needs_reading(&(letters + &"\u{e000}".repeat(100))));
+    }
+
+    #[test]
+    fn alnum_share_rule_trips_on_its_own() {
+        // 90 букв + 250 точек: alnum = 90 (>= 80), мусора 0, доля букв 90/340 = 0.26 (< 0.3).
+        assert!(needs_reading(&("б".repeat(90) + &".".repeat(250))));
+    }
+
+    #[test]
+    fn a_few_bad_chars_do_not_spoil_a_good_page() {
+        // 200 букв + 3 мусорных: alnum = 200, доля мусора 3/203 ≈ 0.015, доля букв ≈ 0.99.
+        assert!(!needs_reading(&("б".repeat(200) + &"\u{fffd}".repeat(3))));
+    }
+
+    #[test]
     fn tokens_are_cheaper_in_latin() {
         assert_eq!(estimate_tokens("абвгде"), 2);
         assert_eq!(estimate_tokens("abcdefgh"), 2);
