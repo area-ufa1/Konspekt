@@ -8,7 +8,7 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 
 use super::quality::estimate_tokens;
-use super::store::{self, FileState};
+use super::store::{self, FileState, Source};
 use crate::database::fields::{self, CLIENT_DISPLAY_NAME, SUMMARY_RESULT};
 use crate::database::repositories::person::visible_summary_text;
 
@@ -191,8 +191,13 @@ async fn load_inner(
     let Some(subject) = subject else { return Ok(None) };
     let subject = fields::open(CLIENT_DISPLAY_NAME, &subject)?;
 
+    // Папку отвязали — её файлы в блок не идут, даже если строки ещё не убраны.
+    let folder_linked = store::get_folder(pool, client_id).await?.is_some();
     let mut docs = Vec::new();
     for file in store::list_files(pool, client_id).await? {
+        if file.source == Source::Folder && !folder_linked {
+            continue;
+        }
         // `Reading` — перечитывается: прежние страницы ещё в силе (у нового файла их нет).
         if !file.use_flag || !matches!(file.state, FileState::Ready | FileState::WaitsClaude | FileState::Reading) {
             continue;
@@ -274,7 +279,7 @@ pub async fn summary_totals(pool: &SqlitePool, client_id: &str) -> Result<(usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::course::store::{CourseFile, Source, StoredPage};
+    use crate::course::store::{CourseFile, StoredPage};
     use crate::course::FileKind;
 
     fn doc(name: &str, words: usize) -> Doc {
@@ -432,6 +437,28 @@ mod tests {
         rereading.state = FileState::Reading;
         store::update_file(&pool, &rereading).await.unwrap();
         assert!(load(&pool, "c1", Some("m2")).await.unwrap().unwrap().text.contains("Первая"));
+    }
+
+    #[tokio::test]
+    async fn folder_files_are_skipped_when_no_folder_is_linked() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO clients (id, display_name, normalized_name, created_at, updated_at) VALUES ('c1', ?, 'п', 'now', 'now')")
+            .bind(fields::seal(CLIENT_DISPLAY_NAME, "П").unwrap())
+            .execute(&pool).await.unwrap();
+        let mut from_folder = course_file("f1", "Папка.pdf", true);
+        from_folder.source = Source::Folder;
+        store::insert_file(&pool, &from_folder).await.unwrap();
+        store::replace_pages(&pool, "f1", &[page(1, "ТекстИзПапки", false)]).await.unwrap();
+        store::insert_file(&pool, &course_file("f22", "Свой.pdf", true)).await.unwrap();
+        store::replace_pages(&pool, "f22", &[page(1, "СвойТекст", false)]).await.unwrap();
+
+        let unlinked = load(&pool, "c1", None).await.unwrap().unwrap();
+        assert_eq!(unlinked.files, 1);
+        assert!(unlinked.text.contains("СвойТекст") && !unlinked.text.contains("ТекстИзПапки"));
+
+        store::set_folder(&pool, "c1", Some("D:/study")).await.unwrap();
+        assert_eq!(load(&pool, "c1", None).await.unwrap().unwrap().files, 2);
     }
 
     #[tokio::test]

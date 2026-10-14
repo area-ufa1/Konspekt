@@ -275,7 +275,8 @@ pub async fn delete_file(pool: &SqlitePool, file_id: &str) -> Result<(), sqlx::E
 pub async fn delete_folder_files(pool: &SqlitePool, client_id: &str) -> Result<u64, sqlx::Error> {
     let mut transaction = pool.begin().await?;
     sqlx::query(
-        "DELETE FROM course_pages WHERE file_id IN          (SELECT id FROM course_files WHERE client_id = ? AND source = ?)",
+        "DELETE FROM course_pages WHERE file_id IN \
+         (SELECT id FROM course_files WHERE client_id = ? AND source = ?)",
     )
     .bind(client_id)
     .bind(Source::Folder.as_str())

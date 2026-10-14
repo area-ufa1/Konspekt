@@ -507,6 +507,13 @@ pub async fn course_set_folder<R: Runtime>(
     let path = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     store::set_folder(pool, &client_id, path.as_deref()).await.map_err(store_error)?;
     notify(&app, &client_id);
+    if path.is_none() {
+        // Сразу и атомарно: ждать очереди нельзя — запись в это время собрала бы блок
+        // из старых строк, а при закрытии приложения они остались бы навсегда.
+        // Очередное `Unbind` — уборка после идущего чтения.
+        store::delete_folder_files(pool, &client_id).await.map_err(store_error)?;
+        notify(&app, &client_id);
+    }
     let job = if path.is_some() { Job::Sync } else { Job::Unbind };
     queue(app, pool.clone(), client_id, job, None);
     Ok(())
