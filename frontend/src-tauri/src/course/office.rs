@@ -106,10 +106,12 @@ fn parse_text(xml: &[u8]) -> Result<Parsed, String> {
                 b"tbl" => tbl_depth += 1,
                 b"tr" if tbl_depth == 1 => row = Some(Vec::new()),
                 b"tc" if tbl_depth == 1 => cell = Some(Vec::new()),
+                b"br" => flush(&mut para, &mut cell, &mut out.lines),
+                b"tab" => para.push(' '),
                 _ => {}
             },
-            Event::Empty(e) => {
-                if e.local_name().as_ref() == b"blip" {
+            Event::Empty(e) => match e.local_name().as_ref() {
+                b"blip" => {
                     for attr in e.attributes().flatten() {
                         if attr.key.local_name().as_ref() == b"embed" {
                             if let Ok(id) = attr.unescape_value() {
@@ -118,7 +120,11 @@ fn parse_text(xml: &[u8]) -> Result<Parsed, String> {
                         }
                     }
                 }
-            }
+                // Мягкий перенос — новая строка (в ячейке части склеятся пробелом), табуляция — пробел.
+                b"br" => flush(&mut para, &mut cell, &mut out.lines),
+                b"tab" => para.push(' '),
+                _ => {}
+            },
             Event::Text(t) if in_t => para.push_str(&text_of(&t)),
             Event::End(e) => match e.local_name().as_ref() {
                 b"t" => {
@@ -157,17 +163,34 @@ fn parse_text(xml: &[u8]) -> Result<Parsed, String> {
     Ok(out)
 }
 
-/// Все `t` файла через пробел (заметки докладчика).
-fn all_text(xml: &[u8]) -> Result<String, String> {
+/// Текст заметок докладчика: только фигура-плейсхолдер `type="body"`, без полей (`a:fld` — номер слайда).
+fn notes_text(xml: &[u8]) -> Result<String, String> {
     let mut reader = Reader::from_reader(xml);
     let mut buf = Vec::new();
-    let mut in_t = false;
+    let (mut in_t, mut is_body, mut fld_depth) = (false, false, 0usize);
     let mut pieces: Vec<String> = Vec::new();
     loop {
         match reader.read_event_into(&mut buf).map_err(|_| "Не удалось разобрать содержимое файла".to_string())? {
-            Event::Start(e) if e.local_name().as_ref() == b"t" => in_t = true,
-            Event::End(e) if e.local_name().as_ref() == b"t" => in_t = false,
-            Event::Text(t) if in_t => {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"ph" => {
+                for attr in e.attributes().flatten() {
+                    if attr.key.local_name().as_ref() == b"type" && attr.value.as_ref() == b"body" {
+                        is_body = true;
+                    }
+                }
+            }
+            Event::Start(e) => match e.local_name().as_ref() {
+                b"sp" => is_body = false,
+                b"fld" => fld_depth += 1,
+                b"t" => in_t = true,
+                _ => {}
+            },
+            Event::End(e) => match e.local_name().as_ref() {
+                b"sp" => is_body = false,
+                b"fld" => fld_depth = fld_depth.saturating_sub(1),
+                b"t" => in_t = false,
+                _ => {}
+            },
+            Event::Text(t) if in_t && is_body && fld_depth == 0 => {
                 let piece = text_of(&t);
                 if !piece.trim().is_empty() {
                     pieces.push(piece.trim().to_string());
@@ -267,13 +290,15 @@ fn extract_pptx_with_limit(bytes: &[u8], limit: u64) -> Result<Vec<PageOut>, Str
             .unwrap_or_default();
 
         let mut lines = parsed.lines;
+        // Нужна ли картинка, решает текст самого слайда: длинные заметки её не отменяют.
+        let slide_needs_picture = quality::needs_reading(&lines.join("\n"));
         if let Some(notes_path) = rels
             .iter()
             .find(|(_, target)| target.contains("notesSlide"))
             .and_then(|(_, target)| resolve("ppt/slides", target))
         {
             if let Some(notes_xml) = read_entry(&mut archive, &notes_path, &mut budget)? {
-                let notes = all_text(&notes_xml)?;
+                let notes = notes_text(&notes_xml)?;
                 if !notes.is_empty() {
                     lines.push(format!("Заметки: {notes}"));
                 }
@@ -282,7 +307,7 @@ fn extract_pptx_with_limit(bytes: &[u8], limit: u64) -> Result<Vec<PageOut>, Str
         let text = lines.join("\n");
 
         let mut image_png = None;
-        if quality::needs_reading(&text) {
+        if slide_needs_picture {
             for id in &parsed.blips {
                 let Some(path) = rels
                     .iter()
@@ -356,7 +381,7 @@ mod tests {
         <p:graphicFrame><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>INNER</a:t></a:r></a:p></a:txBody></a:tc>
         <a:tc><a:txBody><a:p><a:r><a:t>пересечение</a:t></a:r></a:p></a:txBody></a:tc></a:tr></a:tbl></p:graphicFrame>
         </p:spTree></p:cSld></p:sld>"#;
-    const NOTES1: &str = r#"<p:notes xmlns:p="p" xmlns:a="a"><a:t>Сказать про NULL</a:t></p:notes>"#;
+    const NOTES1: &str = r#"<p:notes xmlns:p="p" xmlns:a="a"><p:sp><p:nvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Сказать про NULL</a:t></a:r></a:p></p:txBody></p:sp></p:notes>"#;
     const SLIDE2: &str = r#"<p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r"><p:cSld><p:spTree><p:pic><a:blip r:embed="rId2"/></p:pic></p:spTree></p:cSld></p:sld>"#;
     const SLIDE2_RELS: &str = r#"<Relationships><Relationship Id="rId2" Target="../media/image1.png"/></Relationships>"#;
 
@@ -396,6 +421,57 @@ mod tests {
         let pages = extract_pptx(&zip_of(&files)).unwrap();
         assert!(pages[1].text.contains("номер 2"), "slide10 не должен встать вторым");
         assert_eq!(pages[10].number, 11);
+    }
+
+    #[test]
+    fn notes_take_only_the_body_placeholder() {
+        let notes = r#"<p:notes xmlns:p="p" xmlns:a="a">
+            <p:sp><p:nvSpPr><p:nvPr><p:ph type="sldImg"/></p:nvPr></p:nvSpPr></p:sp>
+            <p:sp><p:nvSpPr><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Только это</a:t></a:r></a:p></p:txBody></p:sp>
+            <p:sp><p:nvSpPr><p:nvPr><p:ph type="sldNum" idx="10"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:fld type="slidenum"><a:t>3</a:t></a:fld></a:p></p:txBody></p:sp>
+            <p:sp><p:nvSpPr><p:nvPr><p:ph type="ftr"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Колонтитул</a:t></a:r></a:p></p:txBody></p:sp>
+            </p:notes>"#;
+        let slide = r#"<p:sld xmlns:p="p" xmlns:a="a"><a:t>Текст слайда</a:t></p:sld>"#;
+        let bytes = zip_of(&[
+            ("ppt/slides/slide1.xml", slide.as_bytes()),
+            ("ppt/slides/_rels/slide1.xml.rels", br#"<Relationships><Relationship Id="n" Target="../notesSlides/notesSlide1.xml"/></Relationships>"#),
+            ("ppt/notesSlides/notesSlide1.xml", notes.as_bytes()),
+        ]);
+        assert_eq!(extract_pptx(&bytes).unwrap()[0].text, "Текст слайда\nЗаметки: Только это");
+    }
+
+    #[test]
+    fn long_notes_do_not_cancel_the_picture_of_a_picture_only_slide() {
+        let long_notes = "Подробные заметки докладчика ".repeat(10);
+        let notes = format!(r#"<p:notes xmlns:p="p" xmlns:a="a"><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><a:t>{long_notes}</a:t></p:sp></p:notes>"#);
+        let rels = r#"<Relationships><Relationship Id="rId2" Target="../media/image1.png"/><Relationship Id="n" Target="../notesSlides/notesSlide1.xml"/></Relationships>"#;
+        let bytes = zip_of(&[
+            ("ppt/slides/slide1.xml", SLIDE2.as_bytes()),
+            ("ppt/slides/_rels/slide1.xml.rels", rels.as_bytes()),
+            ("ppt/notesSlides/notesSlide1.xml", notes.as_bytes()),
+            ("ppt/media/image1.png", &png(20, 20)),
+        ]);
+        let page = &extract_pptx(&bytes).unwrap()[0];
+        assert!(page.text.starts_with("Заметки: "), "{}", page.text);
+        assert!(page.image_png.is_some());
+    }
+
+    #[test]
+    fn soft_breaks_and_tabs_do_not_glue_words() {
+        let document = r#"<w:document xmlns:w="w"><w:body>
+            <w:p><w:r><w:t>Первая</w:t><w:br/><w:t>строка</w:t><w:tab/><w:t>вкладка</w:t></w:r></w:p>
+            <w:tbl><w:tr><w:tc><w:p><w:r><w:t>один</w:t><w:br/><w:t>два</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>три</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+            </w:body></w:document>"#;
+        let text = extract_docx(&zip_of(&[("word/document.xml", document.as_bytes())])).unwrap().remove(0).text;
+        assert_eq!(text, "Первая\nстрока вкладка\nодин два | три");
+    }
+
+    #[test]
+    fn jpeg_slide_picture_is_converted_to_png() {
+        let mut jpeg = Vec::new();
+        image::DynamicImage::new_rgb8(64, 32).write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg).unwrap();
+        let converted = picture_to_png(&jpeg, IMAGE_MAX_PIXELS).expect("JPEG читается");
+        assert_eq!(image::guess_format(&converted).unwrap(), image::ImageFormat::Png);
     }
 
     #[test]

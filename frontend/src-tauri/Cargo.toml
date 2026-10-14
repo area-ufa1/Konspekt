@@ -140,7 +140,7 @@ regex = "1.11.0"
 ndarray = "0.16"
 zip = "2.2"           # Reading .npz (zip of .npy) diarization transforms
 pdfium-render = { version = "0.9.4", default-features = false, features = ["image_latest", "thread_safe", "pdfium_latest"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 quick-xml = "0.37"
 encoding_rs = "0.8"
 sha2 = "0.10"         # SHA-256 verification for downloaded models
