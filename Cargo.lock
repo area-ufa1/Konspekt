@@ -3088,6 +3088,7 @@ dependencies = [
  "byteorder-lite",
  "moxcms",
  "num-traits",
+ "png 0.18.1",
  "zune-core",
  "zune-jpeg",
 ]
@@ -3647,6 +3648,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "hmac",
+ "image",
  "infer 0.15.0",
  "lazy_static",
  "log",

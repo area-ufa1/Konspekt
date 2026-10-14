@@ -5,6 +5,8 @@ use std::sync::Mutex;
 
 use pdfium_render::prelude::*;
 
+use super::{quality, PageOut, IMAGE_LONG_SIDE, MAX_PAGES};
+
 static RESOURCE_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Папка ресурсов приложения; задаётся в `setup`.
@@ -32,6 +34,46 @@ pub fn open() -> Result<Pdfium, String> {
     }
 }
 
+pub fn extract(bytes: &[u8]) -> Result<Vec<PageOut>, String> {
+    let pdfium = open()?;
+    let document = pdfium.load_pdf_from_byte_slice(bytes, None).map_err(|error| match error {
+        PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::PasswordError) => {
+            "PDF защищён паролем — снимите пароль и добавьте снова".to_string()
+        }
+        other => format!("Не удалось открыть PDF: {other}"),
+    })?;
+    let count = document.pages().len() as usize;
+    if count > MAX_PAGES {
+        return Err(format!("В PDF {count} страниц — больше {MAX_PAGES}. Разделите файл."));
+    }
+    let mut out = Vec::with_capacity(count);
+    for (index, page) in document.pages().iter().enumerate() {
+        let text = page.text().map(|t| t.all()).unwrap_or_default();
+        let image_png = if quality::needs_reading(&text) { Some(render_png(&page)?) } else { None };
+        out.push(PageOut { number: index as u32 + 1, text: text.trim().to_string(), image_png });
+    }
+    Ok(out)
+}
+
+fn render_png(page: &PdfPage) -> Result<Vec<u8>, String> {
+    let (w, h) = (page.width().value, page.height().value);
+    let config = if w >= h {
+        PdfRenderConfig::new().set_target_width(IMAGE_LONG_SIDE as i32)
+    } else {
+        PdfRenderConfig::new().set_target_height(IMAGE_LONG_SIDE as i32)
+    };
+    let image = page
+        .render_with_config(&config)
+        .map_err(|error| format!("Не удалось отрисовать страницу PDF: {error}"))?
+        .as_image()
+        .map_err(|error| format!("Не удалось отрисовать страницу PDF: {error}"))?;
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|error| format!("Не удалось сохранить страницу картинкой: {error}"))?;
+    Ok(png)
+}
+
 #[cfg(all(test, windows))]
 pub(crate) mod tests {
     use super::*;
@@ -48,6 +90,42 @@ pub(crate) mod tests {
                 .unwrap();
         }
         document.save_to_bytes().unwrap()
+    }
+
+    /// PDF: страница 1 — текст, страница 2 — только картинка (как скан).
+    pub(crate) fn pdf_text_then_scan() -> Vec<u8> {
+        let pdfium = open().unwrap();
+        let mut document = pdfium.create_new_pdf().unwrap();
+        let font = document.fonts_mut().load_true_type_from_file("C:\\Windows\\Fonts\\arial.ttf", true).unwrap();
+        let mut page = document.pages_mut().create_page_at_end(PdfPagePaperSize::a4()).unwrap();
+        let text = "Вторая нормальная форма: каждый неключевой атрибут полностью зависит от первичного ключа отношения.";
+        page.objects_mut().create_text_object(PdfPoints::new(30.0), PdfPoints::new(700.0), text, font, PdfPoints::new(9.0)).unwrap();
+        let mut scan = document.pages_mut().create_page_at_end(PdfPagePaperSize::a4()).unwrap();
+        let picture = image::DynamicImage::new_rgb8(400, 300);
+        scan.objects_mut()
+            .create_image_object(PdfPoints::new(50.0), PdfPoints::new(300.0), &picture, Some(PdfPoints::new(400.0)), Some(PdfPoints::new(300.0)))
+            .unwrap();
+        document.save_to_bytes().unwrap()
+    }
+
+    #[test]
+    fn text_pages_keep_text_and_scans_get_a_png() {
+        let pages = extract(&pdf_text_then_scan()).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].number, 1);
+        assert!(pages[0].text.contains("Вторая нормальная форма"));
+        assert_eq!(pages[0].image_png, None);
+        let png = pages[1].image_png.as_ref().expect("скан → картинка");
+        assert_eq!(&png[1..4], b"PNG");
+        let decoded = image::load_from_memory(png).unwrap();
+        let long = decoded.width().max(decoded.height());
+        assert!((crate::course::IMAGE_LONG_SIDE - 1..=crate::course::IMAGE_LONG_SIDE).contains(&long), "{long}");
+    }
+
+    #[test]
+    fn broken_pdf_is_an_error_not_a_panic() {
+        let error = extract(b"%PDF-1.7 not really").unwrap_err();
+        assert!(error.contains("PDF"), "{error}");
     }
 
     #[test]
