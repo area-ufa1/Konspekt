@@ -97,3 +97,27 @@ async fn locked_archive_refuses_course_writes() {
         .unwrap();
     assert!(!store::get_settings(&pool).await.unwrap().in_assistant);
 }
+
+#[tokio::test]
+async fn locked_archive_gives_no_block() {
+    let pool = archive().await;
+    // Rows as a keyed session left them: the marker says "sealed", and without
+    // the key nothing can open it.
+    sqlx::raw_sql(
+        "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, \
+             updated_at TEXT NOT NULL, client_id TEXT); \
+         CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, result TEXT); \
+         UPDATE clients SET display_name = 'tkf1:xxxx' WHERE id = 'c1'; \
+         INSERT INTO course_files (id, client_id, name, kind, source, size, modified, hash, use_flag, state, added_at) \
+             VALUES ('f1', 'c1', 'tkf1:yyyy', 'pdf', 'added', 1, 'now', 'h', 1, 'ready', 'now'); \
+         INSERT INTO course_pages (file_id, number, text, by_claude, waits_claude) VALUES ('f1', 1, 'tkf1:zzzz', 0, 0); \
+         INSERT INTO meetings VALUES ('m1', 't', '2026-10-07T10:00:00Z', 'now', 'c1'); \
+         INSERT INTO summary_processes VALUES ('m1', 'tkf1:wwww');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(app_lib::course::context::load(&pool, "c1", None).await, Ok(None));
+    assert_eq!(app_lib::course::context::load(&pool, "c1", Some("m2")).await, Ok(None));
+}
