@@ -2,9 +2,15 @@
 
 use std::future::Future;
 use std::sync::Mutex;
+use serde::Serialize;
+use sqlx::SqlitePool;
+use tauri::{AppHandle, Emitter, Runtime, State};
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::context::{self, CourseBlock};
+use super::context::{self, CourseBlock, CAP_TOKENS};
+use super::ingest::{self, Incoming, Progress};
+use super::store::{self, CourseFile, CourseSettings, FileState, Source, StoredPage};
+use crate::database::repositories::setting::SettingsRepository;
 
 /// Предмет текущей записи и её поколение: поколение растёт при каждой смене предмета
 /// и при сбросе, так что запоздалый сброс прошлой записи не трогает следующую.
@@ -119,6 +125,318 @@ pub async fn course_live_status() -> Result<Option<CourseBlock>, String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Окно материалов
+// ---------------------------------------------------------------------------
+
+const ARCHIVE_LOCKED: &str = "Архив заперт — сначала откройте его";
+
+fn store_error(error: sqlx::Error) -> String {
+    if crate::database::fields::is_archive_locked(&error) {
+        ARCHIVE_LOCKED.to_string()
+    } else {
+        format!("Не удалось обратиться к материалам: {error}")
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CourseOverview {
+    pub files: Vec<CourseFile>,
+    pub folder: Option<String>,
+    pub folder_unreachable: bool,
+    pub summaries: usize,
+    pub summary_tokens: usize,
+    pub material_tokens: usize,
+    pub cap: usize,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Changed {
+    client_id: String,
+}
+
+/// Токены раздела прошлых пар внутри собранного блока.
+fn lectures_tokens(text: &str) -> usize {
+    const OPEN: &str = "<past_lectures>";
+    const CLOSE: &str = "</past_lectures>";
+    let Some(start) = text.find(OPEN) else { return 0 };
+    let section = &text[start..];
+    let end = section.find(CLOSE).map_or(section.len(), |at| at + CLOSE.len());
+    super::quality::estimate_tokens(&section[..end])
+}
+
+/// Модель чтения картинок: модель выжимки, если провайдер — claude-cli, иначе `sonnet`.
+fn reading_model(provider: &str, model: &str) -> String {
+    if provider == "claude-cli" && !model.trim().is_empty() {
+        model.trim().to_string()
+    } else {
+        "sonnet".to_string()
+    }
+}
+
+/// Данные окна без Tauri: файлы, папка, числа для полосы.
+pub async fn overview(pool: &SqlitePool, client_id: &str) -> Result<CourseOverview, String> {
+    let files = store::list_files(pool, client_id).await.map_err(store_error)?;
+    let folder = store::get_folder(pool, client_id).await.map_err(store_error)?;
+    let folder_unreachable = match &folder {
+        Some(path) => !tokio::fs::metadata(path).await.map(|m| m.is_dir()).unwrap_or(false),
+        None => false,
+    };
+    let (summaries, summary_tokens) = match context::load(pool, client_id, None).await? {
+        Some(block) => (block.summaries, lectures_tokens(&block.text)),
+        None => (0, 0),
+    };
+    let material_tokens = files.iter().filter(|file| file.use_flag).map(|file| file.tokens.max(0) as usize).sum();
+    Ok(CourseOverview { files, folder, folder_unreachable, summaries, summary_tokens, material_tokens, cap: CAP_TOKENS })
+}
+
+/// Одна фоновая работа на приложение: чтение файлов и Claude идут по очереди.
+static WORK: AsyncMutex<()> = AsyncMutex::const_new(());
+
+enum Job {
+    Add(Vec<String>),
+    Reread(String),
+    /// Обход папки предмета, затем картинки.
+    Sync,
+    /// Только дочитать картинки (при открытии окна).
+    Waiting,
+}
+
+fn notify<R: Runtime>(app: &AppHandle<R>, client_id: &str) {
+    let _ = app.emit("course-changed", Changed { client_id: client_id.to_string() });
+}
+
+fn progress<R: Runtime>(app: &AppHandle<R>) -> impl Fn(Progress) + '_ {
+    move |progress| {
+        let _ = app.emit("course-progress", progress);
+    }
+}
+
+fn queue<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, client_id: String, job: Job) {
+    tauri::async_runtime::spawn(async move {
+        let _turn = WORK.lock().await;
+        run(&app, &pool, &client_id, job).await;
+    });
+}
+
+fn first_line(error: &str) -> &str {
+    error.lines().next().unwrap_or_default()
+}
+
+async fn run<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client_id: &str, job: Job) {
+    let explicit = !matches!(job, Job::Waiting);
+    match job {
+        Job::Add(paths) => {
+            for path in paths {
+                let existing = store::find_by_folder_path(pool, client_id, &path).await.ok().flatten();
+                let incoming = Incoming { path: path.into(), source: Source::Added };
+                if let Err(error) = ingest::ingest_file(pool, client_id, &incoming, existing.as_ref(), progress(app)).await {
+                    log::warn!("Материалы: файл не добавлен: {}", first_line(&error));
+                }
+                notify(app, client_id);
+            }
+        }
+        Job::Reread(file_id) => match file_by_id(pool, &file_id).await {
+            Ok(Some(file)) => {
+                if let Some(path) = file.folder_path.clone() {
+                    let incoming = Incoming { path: path.into(), source: file.source };
+                    if let Err(error) = ingest::ingest_file(pool, client_id, &incoming, Some(&file), progress(app)).await {
+                        log::warn!("Материалы: файл не перечитан: {}", first_line(&error));
+                    }
+                }
+                notify(app, client_id);
+            }
+            _ => log::warn!("Материалы: файл для перечитывания не найден"),
+        },
+        Job::Sync => {
+            match ingest::sync_folder(pool, client_id).await {
+                Ok(report) => log::info!(
+                    "Материалы: папка — добавлено {}, изменено {}, убрано {}, без изменений {}",
+                    report.added, report.changed, report.removed, report.unchanged
+                ),
+                Err(error) => log::warn!("Материалы: папка не обошлась: {}", first_line(&error)),
+            }
+            notify(app, client_id);
+        }
+        Job::Waiting => {}
+    }
+    let read = read_pictures(app, pool, client_id).await;
+    // Из списка (`Waiting`) — только если что-то прочиталось: иначе отказ Claude
+    // зациклил бы «изменилось → обновить список → дочитать».
+    if explicit || read > 0 {
+        notify(app, client_id);
+    }
+}
+
+async fn file_by_id(pool: &SqlitePool, file_id: &str) -> Result<Option<CourseFile>, sqlx::Error> {
+    let owner: Option<String> = sqlx::query_scalar("SELECT client_id FROM course_files WHERE id = ?")
+        .bind(file_id)
+        .fetch_optional(pool)
+        .await?;
+    let Some(client_id) = owner else { return Ok(None) };
+    Ok(store::list_files(pool, &client_id).await?.into_iter().find(|file| file.id == file_id))
+}
+
+/// Дочитывает страницы-картинки предмета через Claude; число прочитанных страниц.
+/// Отказ Claude (вход, лимит, «Только этот компьютер») останавливает чтение: файлы остаются в ожидании.
+async fn read_pictures<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client_id: &str) -> usize {
+    if crate::network_policy::local_only() {
+        return 0;
+    }
+    let waiting: Vec<CourseFile> = match store::list_files(pool, client_id).await {
+        Ok(files) => files.into_iter().filter(|file| file.state == FileState::WaitsClaude).collect(),
+        Err(_) => return 0,
+    };
+    if waiting.is_empty() {
+        return 0;
+    }
+    let cli_path = SettingsRepository::get_claude_cli_path(pool).await.ok().flatten();
+    let model = match SettingsRepository::get_model_config(pool).await {
+        Ok(Some(config)) => reading_model(&config.provider, &config.model),
+        _ => "sonnet".to_string(),
+    };
+    let hidden = crate::privacy::vocabulary::shield_for(pool, None).await;
+    let (cli, model, shield) = (cli_path.as_deref(), model.as_str(), hidden.as_ref());
+    let mut read = 0usize;
+    for file in waiting {
+        let result = ingest::read_waiting_pages(
+            pool,
+            &file.id,
+            |png| async move { super::reader::read_page(cli, model, &png, shield).await },
+            |step| {
+                read += 1;
+                let _ = app.emit("course-progress", step);
+            },
+        )
+        .await;
+        if let Err(error) = result {
+            log::warn!("Материалы: чтение картинок остановлено: {}", first_line(&error));
+            break;
+        }
+    }
+    read
+}
+
+#[tauri::command]
+pub async fn course_list<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, crate::state::AppState>,
+    client_id: String,
+) -> Result<CourseOverview, String> {
+    let pool = state.db_manager.pool();
+    let view = overview(pool, &client_id).await?;
+    if !crate::network_policy::local_only() && view.files.iter().any(|file| file.state == FileState::WaitsClaude) {
+        queue(app, pool.clone(), client_id, Job::Waiting);
+    }
+    Ok(view)
+}
+
+#[tauri::command]
+pub async fn course_add_files<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, crate::state::AppState>,
+    client_id: String,
+    paths: Vec<String>,
+) -> Result<(), String> {
+    if !paths.is_empty() {
+        queue(app, state.db_manager.pool().clone(), client_id, Job::Add(paths));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn course_set_use<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, crate::state::AppState>,
+    file_id: String,
+    use_flag: bool,
+) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    let Some(mut file) = file_by_id(pool, &file_id).await.map_err(store_error)? else {
+        return Err("Файл не найден".to_string());
+    };
+    file.use_flag = use_flag;
+    store::update_file(pool, &file).await.map_err(store_error)?;
+    notify(&app, &file.client_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn course_remove<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, crate::state::AppState>,
+    file_id: String,
+) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    let file = file_by_id(pool, &file_id).await.map_err(store_error)?;
+    store::delete_file(pool, &file_id).await.map_err(store_error)?;
+    if let Some(file) = file {
+        notify(&app, &file.client_id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn course_reread<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, crate::state::AppState>,
+    file_id: String,
+) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    let Some(file) = file_by_id(pool, &file_id).await.map_err(store_error)? else {
+        return Err("Файл не найден".to_string());
+    };
+    queue(app, pool.clone(), file.client_id, Job::Reread(file_id));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn course_pages(state: State<'_, crate::state::AppState>, file_id: String) -> Result<Vec<StoredPage>, String> {
+    store::pages(state.db_manager.pool(), &file_id).await.map_err(store_error)
+}
+
+#[tauri::command]
+pub async fn course_set_folder<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, crate::state::AppState>,
+    client_id: String,
+    path: Option<String>,
+) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    let path = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    store::set_folder(pool, &client_id, path.as_deref()).await.map_err(store_error)?;
+    notify(&app, &client_id);
+    if path.is_some() {
+        queue(app, pool.clone(), client_id, Job::Sync);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn course_refresh<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, crate::state::AppState>,
+    client_id: String,
+) -> Result<(), String> {
+    queue(app, state.db_manager.pool().clone(), client_id, Job::Sync);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn course_get_settings(state: State<'_, crate::state::AppState>) -> Result<CourseSettings, String> {
+    store::get_settings(state.db_manager.pool()).await.map_err(store_error)
+}
+
+#[tauri::command]
+pub async fn course_save_settings(
+    state: State<'_, crate::state::AppState>,
+    settings: CourseSettings,
+) -> Result<(), String> {
+    store::save_settings(state.db_manager.pool(), &settings).await.map_err(store_error)
+}
+
 #[cfg(test)]
 pub(crate) fn set_subject_for_test(client_id: Option<String>) {
     let mut state = recording();
@@ -194,5 +512,84 @@ mod tests {
         let next = cached_block(|client_id| async move { Some(block(&client_id)) }).await;
         assert_eq!(next.unwrap().subject, "c2");
         clear_recording_block(current_generation()).await;
+    }
+
+    async fn pool_with_client(client_id: &str) -> SqlitePool {
+        use crate::database::fields::{self, CLIENT_DISPLAY_NAME};
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        let name = fields::seal(CLIENT_DISPLAY_NAME, "Базы данных").unwrap();
+        sqlx::query(
+            "INSERT INTO clients (id, display_name, normalized_name, notes, created_at, updated_at) \
+             VALUES (?, ?, 'базы данных', NULL, '2026-10-14T10:00:00Z', '2026-10-14T10:00:00Z')",
+        )
+        .bind(client_id)
+        .bind(name)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    fn course_file(id: &str, tokens: i64, use_flag: bool) -> CourseFile {
+        CourseFile {
+            id: id.into(),
+            client_id: "c1".into(),
+            name: format!("{id}.txt"),
+            kind: crate::course::FileKind::Txt,
+            source: Source::Added,
+            folder_path: None,
+            size: 1,
+            modified: String::new(),
+            hash: "h".into(),
+            use_flag,
+            state: FileState::Ready,
+            error: None,
+            pages: 1,
+            pages_waiting: 0,
+            pages_by_claude: 0,
+            tokens,
+            added_at: format!("2026-10-14T10:00:0{}Z", if id == "a" { 1 } else { 2 }),
+        }
+    }
+
+    #[tokio::test]
+    async fn overview_counts_only_used_files() {
+        let pool = pool_with_client("c1").await;
+        store::insert_file(&pool, &course_file("a", 1000, true)).await.unwrap();
+        store::insert_file(&pool, &course_file("b", 500, false)).await.unwrap();
+        let view = overview(&pool, "c1").await.unwrap();
+        assert_eq!(view.files.len(), 2);
+        assert_eq!(view.material_tokens, 1000);
+        assert_eq!(view.cap, 80_000);
+        assert_eq!((view.summaries, view.summary_tokens), (0, 0));
+        assert_eq!(view.folder, None);
+        assert!(!view.folder_unreachable);
+    }
+
+    #[tokio::test]
+    async fn overview_flags_a_missing_folder() {
+        let pool = pool_with_client("c1").await;
+        let gone = std::env::temp_dir().join("konspekt-no-such-folder-9f3a");
+        store::set_folder(&pool, "c1", Some(gone.to_str().unwrap())).await.unwrap();
+        let view = overview(&pool, "c1").await.unwrap();
+        assert!(view.folder.is_some());
+        assert!(view.folder_unreachable);
+    }
+
+    #[test]
+    fn lectures_tokens_counts_only_the_lectures_section() {
+        assert_eq!(lectures_tokens("<course_materials>x</course_materials>"), 0);
+        let text = "<course_materials>слово слово</course_materials>\n\n<past_lectures>\n<lecture date=\"d\">итог</lecture>\n</past_lectures>\n\nинструкция";
+        let n = lectures_tokens(text);
+        assert!(n > 0);
+        assert!(n < super::super::quality::estimate_tokens(text));
+    }
+
+    #[test]
+    fn reading_uses_the_summary_model_only_for_claude_cli() {
+        assert_eq!(reading_model("claude-cli", "opus"), "opus");
+        assert_eq!(reading_model("claude-cli", " "), "sonnet");
+        assert_eq!(reading_model("ollama", "llama3"), "sonnet");
     }
 }
