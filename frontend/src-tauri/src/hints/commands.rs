@@ -33,7 +33,7 @@ pub async fn setup_for_hints(pool: &sqlx::SqlitePool, settings: &HintSettings) -
         return StartSetup::Unavailable(OFF.into());
     }
     let course = crate::course::store::get_settings(pool).await.unwrap_or_default();
-    let block = if course.in_hints { crate::course::commands::block_for_recording(pool).await } else { None };
+    let block = if course.in_hints && crate::claude_session::commands::uses_dialog_provider(pool).await { crate::course::commands::block_for_recording(pool).await } else { None };
     crate::claude_session::commands::setup_with_prompt(pool, HINT_SYSTEM_PROMPT, block.as_ref().map(|b| b.text.as_str()))
         .await
 }

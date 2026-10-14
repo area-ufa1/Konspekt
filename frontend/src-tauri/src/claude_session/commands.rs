@@ -21,16 +21,15 @@ struct AnswerEvent<'a> {
 /// Что делать с ассистентом при старте записи.
 pub async fn setup_for_recording(pool: &sqlx::SqlitePool) -> StartSetup {
     let settings = crate::course::store::get_settings(pool).await.unwrap_or_default();
-    let block = if settings.in_assistant { crate::course::commands::block_for_recording(pool).await } else { None };
+    // Блок (с обходом папки) строим только там, где есть диалог с Claude Code.
+    let block = if settings.in_assistant && uses_dialog_provider(pool).await { crate::course::commands::block_for_recording(pool).await } else { None };
     setup_with_prompt(pool, SYSTEM_PROMPT, block.as_ref().map(|b| b.text.as_str())).await
 }
 
 /// Системная инструкция диалога: материалы предмета первыми, затем базовый промпт.
 pub fn compose_system_prompt(course: Option<&str>, base: &str) -> String {
     match course {
-        Some(block) if !block.trim().is_empty() => format!("{block}
-
-{base}"),
+        Some(block) if !block.trim().is_empty() => format!("{block}\n\n{base}"),
         _ => base.to_string(),
     }
 }
@@ -258,6 +257,7 @@ mod tests {
         assert!(prompt.starts_with("<course_materials>"));
         assert!(prompt.ends_with("BASE"));
         assert_eq!(compose_system_prompt(None, "BASE"), "BASE");
+        assert!(prompt.contains("</course_materials>\n\nBASE"));
         assert_eq!(compose_system_prompt(Some("  "), "BASE"), "BASE");
     }
 

@@ -89,12 +89,39 @@ async fn with_course_block(
         .flatten();
     let Some(client_id) = client.flatten() else { return custom_prompt };
     match crate::course::context::load(pool, &client_id, Some(meeting_id)).await {
-        Ok(Some(block)) if block.text.trim().is_empty() => custom_prompt,
-        Ok(Some(block)) if custom_prompt.trim().is_empty() => block.text,
-        Ok(Some(block)) => format!("{}
-
-{}", block.text, custom_prompt),
+        Ok(Some(block)) => merge_course_text(&block.text, custom_prompt),
         _ => custom_prompt,
+    }
+}
+
+/// Текст материалов перед пользовательским контекстом; пустой текст ничего не меняет.
+fn merge_course_text(course: &str, custom_prompt: String) -> String {
+    if course.trim().is_empty() {
+        custom_prompt
+    } else if custom_prompt.trim().is_empty() {
+        course.to_string()
+    } else {
+        format!("{course}\n\n{custom_prompt}")
+    }
+}
+
+#[cfg(test)]
+mod course_block_tests {
+    use super::*;
+
+    #[test]
+    fn only_cloud_providers_take_materials() {
+        assert!(provider_takes_materials(&LLMProvider::ClaudeCli));
+        assert!(provider_takes_materials(&LLMProvider::Claude));
+        assert!(!provider_takes_materials(&LLMProvider::BuiltInAI));
+        assert!(!provider_takes_materials(&LLMProvider::Ollama));
+    }
+
+    #[test]
+    fn empty_materials_leave_the_prompt_alone() {
+        assert_eq!(merge_course_text("  ", "ctx".into()), "ctx");
+        assert_eq!(merge_course_text("M", String::new()), "M");
+        assert_eq!(merge_course_text("M", "ctx".into()), "M\n\nctx");
     }
 }
 
