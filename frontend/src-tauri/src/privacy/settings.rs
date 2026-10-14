@@ -23,7 +23,7 @@ pub struct PrivacySettings {
 impl Default for PrivacySettings {
     fn default() -> Self {
         Self {
-            anonymize_cloud: true,
+            anonymize_cloud: false,
             hidden_terms: Vec::new(),
             find_names_locally: true,
         }
@@ -116,8 +116,8 @@ mod tests {
     }
 
     #[test]
-    fn hiding_is_on_before_anyone_chooses() {
-        assert!(PrivacySettings::default().anonymize_cloud);
+    fn hiding_is_off_before_anyone_chooses() {
+        assert!(!PrivacySettings::default().anonymize_cloud);
         assert!(PrivacySettings::default().find_names_locally);
     }
 
@@ -137,6 +137,24 @@ mod tests {
         save(&pool, &chosen).await.unwrap();
         let reread = load(&pool).await.unwrap();
         assert!(!reread.find_names_locally);
-        assert!(reread.anonymize_cloud);
+        assert!(!reread.anonymize_cloud);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_database_hides_nothing_until_the_owner_turns_it_on() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+
+        assert!(!load(&pool).await.unwrap().anonymize_cloud);
+        assert!(crate::privacy::vocabulary::shield_for(&pool, None).await.is_none());
+
+        let mut chosen = load(&pool).await.unwrap();
+        chosen.anonymize_cloud = true;
+        save(&pool, &chosen).await.unwrap();
+        assert!(crate::privacy::vocabulary::shield_for(&pool, None).await.is_some());
     }
 }

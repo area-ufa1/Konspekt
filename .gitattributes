@@ -26,3 +26,4 @@ frontend/src-tauri/Cargo.toml text eol=lf
 # cmd misparses LF-only batch files.
 scripts/*.cmd text eol=crlf
 frontend/src-tauri/migrations/20261014000000_add_course_materials.sql text eol=lf
+frontend/src-tauri/migrations/20261014010000_privacy_off_by_default.sql text eol=lf
