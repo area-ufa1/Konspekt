@@ -1,5 +1,7 @@
 #[path = "build/ffmpeg.rs"]
 mod ffmpeg;
+#[path = "build/pdfium.rs"]
+mod pdfium;
 
 fn main() {
     // GPU Acceleration Detection and Build Guidance
@@ -17,6 +19,9 @@ fn main() {
 
     // Download and bundle FFmpeg binary at build-time
     ffmpeg::ensure_ffmpeg_binary();
+
+    // Download and bundle PDFium (course materials)
+    pdfium::ensure_pdfium();
 
     tauri_build::build()
 }

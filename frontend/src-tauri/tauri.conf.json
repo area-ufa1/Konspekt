@@ -85,6 +85,7 @@
         "resources": [
             "templates/*.json",
             "resources/diarization/*",
+            "resources/pdfium/*",
             "runtime-deps/*",
             "installer-variants/*",
             "licenses/**/*"

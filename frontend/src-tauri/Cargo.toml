@@ -64,6 +64,7 @@ zip = "2.2"           # ZIP extraction (Windows, macOS)
 tar = "0.4"           # TAR extraction (Linux)
 xz2 = "0.1"           # XZ decompression (Linux)
 sha2 = "0.10"         # SHA-256 pinning of the bundled FFmpeg
+flate2 = "1"           # tar.gz of the bundled PDFium
 
 
 [dependencies]
@@ -138,6 +139,8 @@ realfft = "3.4.0"
 regex = "1.11.0"
 ndarray = "0.16"
 zip = "2.2"           # Reading .npz (zip of .npy) diarization transforms
+pdfium-render = { version = "0.9.4", default-features = false, features = ["image_latest", "thread_safe", "pdfium_latest"] }
+quick-xml = "0.37"
 sha2 = "0.10"         # SHA-256 verification for downloaded models
 
 # Keys and encryption (phase B). Pure Rust, no C toolchain:

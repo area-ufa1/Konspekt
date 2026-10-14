@@ -38,6 +38,7 @@ pub mod assistant_turns;
 pub mod audio;
 pub mod claude_cli;
 pub mod claude_session;
+pub mod course;
 pub mod hints;
 pub mod hint_window;
 pub mod config;
@@ -652,6 +653,7 @@ pub fn run() {
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = app.handle().path().resource_dir() {
+                course::pdf::set_resource_dir(resource_path.clone());
                 let templates_dir = resource_path.join("templates");
                 log::info!("Setting bundled templates directory to: {:?}", templates_dir);
                 summary::templates::set_bundled_templates_dir(templates_dir);
