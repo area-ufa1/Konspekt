@@ -164,6 +164,34 @@ fn columns() -> Vec<Column> {
             kind: Kind::Sealed,
         },
         Column {
+            table: "course_files",
+            key: "id",
+            name: "name",
+            field: fields::COURSE_FILE_NAME,
+            kind: Kind::Sealed,
+        },
+        Column {
+            table: "course_files",
+            key: "id",
+            name: "folder_path",
+            field: fields::COURSE_FILE_PATH,
+            kind: Kind::Sealed,
+        },
+        Column {
+            table: "course_pages",
+            key: "rowid",
+            name: "text",
+            field: fields::COURSE_PAGE_TEXT,
+            kind: Kind::Sealed,
+        },
+        Column {
+            table: "clients",
+            key: "id",
+            name: "course_folder",
+            field: fields::CLIENT_COURSE_FOLDER,
+            kind: Kind::Sealed,
+        },
+        Column {
             table: "privacy_settings",
             key: "id",
             name: "hidden_terms",
@@ -523,7 +551,11 @@ mod tests {
              CREATE TABLE transcript_chunks (meeting_id TEXT PRIMARY KEY, \
                  transcript_text TEXT NOT NULL, meeting_name TEXT); \
              CREATE TABLE clients (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
-                 normalized_name TEXT NOT NULL, notes TEXT); \
+                 normalized_name TEXT NOT NULL, notes TEXT, course_folder TEXT); \
+             CREATE TABLE course_files (id TEXT PRIMARY KEY, name TEXT NOT NULL, \
+                 folder_path TEXT); \
+             CREATE TABLE course_pages (file_id TEXT NOT NULL, number INTEGER NOT NULL, \
+                 text TEXT NOT NULL, PRIMARY KEY (file_id, number)); \
              CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
                  normalized_name TEXT NOT NULL, notes TEXT); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
@@ -548,7 +580,7 @@ mod tests {
              INSERT INTO meetings VALUES ('m1', 'Встреча'); \
              INSERT INTO transcripts VALUES ('t1', 'первая реплика', 'Анна', NULL, NULL, NULL, \
                  '[{\"w\":\"первая\",\"s\":0.0,\"e\":0.4}]'); \
-             INSERT INTO clients VALUES ('c1', 'Анна', 'анна', NULL); \
+             INSERT INTO clients VALUES ('c1', 'Анна', 'анна', NULL, NULL); \
              INSERT INTO people VALUES ('p1', 'Анна', 'анна', NULL); \
              INSERT INTO person_speakers VALUES ('p1', 'm1', 'Анна');",
         )

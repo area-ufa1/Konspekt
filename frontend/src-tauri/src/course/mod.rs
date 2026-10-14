@@ -4,6 +4,7 @@
 pub mod office;
 pub mod pdf;
 pub mod quality;
+pub mod store;
 
 /// Одна страница/слайд материала: текст и, если годного текста нет, картинка страницы.
 #[derive(Debug, Clone, PartialEq)]

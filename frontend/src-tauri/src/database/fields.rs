@@ -63,6 +63,10 @@ pub const CHUNK_TEXT: Field = Field::new("transcript_chunks", "transcript_text")
 pub const CHUNK_MEETING_NAME: Field = Field::new("transcript_chunks", "meeting_name");
 /// A client's name and the owner's notes about them.
 pub const CLIENT_DISPLAY_NAME: Field = Field::new("clients", "display_name");
+pub const COURSE_FILE_NAME: Field = Field::new("course_files", "name");
+pub const COURSE_FILE_PATH: Field = Field::new("course_files", "folder_path");
+pub const COURSE_PAGE_TEXT: Field = Field::new("course_pages", "text");
+pub const CLIENT_COURSE_FOLDER: Field = Field::new("clients", "course_folder");
 pub const CLIENT_NOTES: Field = Field::new("clients", "notes");
 /// A durable speaker profile: the same material as a client.
 pub const PRIVACY_HIDDEN_TERMS: Field = Field::new("privacy_settings", "hidden_terms");
