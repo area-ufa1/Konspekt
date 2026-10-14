@@ -268,6 +268,9 @@ export default function RootLayout({
 
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
+    // Документы для материалов предмета обрабатывает их окно; здесь нужны только аудиофайлы.
+    if (!paths.some((p) => { const ext = p.split('.').pop()?.toLowerCase(); return !!ext && isAudioExtension(ext); })) return;
+
     // Check if beta features are enabled (read from localStorage directly since we're outside ConfigProvider)
     const betaFeatures = loadBetaFeatures();
 
