@@ -1,6 +1,7 @@
 //! Материалы курса (Konspekt, подпроект 3): текст файлов предмета, хранение,
 //! сборка блока для Claude.
 
+pub mod ingest;
 pub mod office;
 pub mod pdf;
 pub mod quality;
