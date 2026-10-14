@@ -1,6 +1,6 @@
 [package]
 name = "meetily"
-version = "0.2.0"
+version = "0.3.0"
 description = "Konspekt — запись и конспект пар с Claude"
 authors = ["TylerBuza"]
 repository = "https://github.com/area-ufa1/Konspekt"
@@ -64,6 +64,7 @@ zip = "2.2"           # ZIP extraction (Windows, macOS)
 tar = "0.4"           # TAR extraction (Linux)
 xz2 = "0.1"           # XZ decompression (Linux)
 sha2 = "0.10"         # SHA-256 pinning of the bundled FFmpeg
+flate2 = "1"           # tar.gz of the bundled PDFium
 
 
 [dependencies]
@@ -138,6 +139,10 @@ realfft = "3.4.0"
 regex = "1.11.0"
 ndarray = "0.16"
 zip = "2.2"           # Reading .npz (zip of .npy) diarization transforms
+pdfium-render = { version = "0.9.4", default-features = false, features = ["image_latest", "thread_safe", "pdfium_latest"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+quick-xml = "0.37"
+encoding_rs = "0.8"
 sha2 = "0.10"         # SHA-256 verification for downloaded models
 
 # Keys and encryption (phase B). Pure Rust, no C toolchain:

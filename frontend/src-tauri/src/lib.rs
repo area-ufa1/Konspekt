@@ -38,6 +38,7 @@ pub mod assistant_turns;
 pub mod audio;
 pub mod claude_cli;
 pub mod claude_session;
+pub mod course;
 pub mod hints;
 pub mod hint_window;
 pub mod config;
@@ -460,6 +461,13 @@ pub fn run() {
             }
             log::info!("Application setup complete");
 
+            // Промпт диалога держит материалы курса открытым текстом; после падения
+            // или убийства процесса его `Drop` не отработал — убираем до первого вызова.
+            let swept = claude_cli::remove_stale_prompt_files(&claude_cli::working_dir());
+            if swept > 0 {
+                log::info!("Removed {swept} stale Claude system prompt file(s)");
+            }
+
             // Initialize system tray
             if let Err(e) = tray::create_tray(app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
@@ -640,6 +648,10 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         handle.state::<HintService>().dialog.finish_stop(token).await;
                     });
+                    // Запись кончилась: предмет и собранный блок больше не нужны. Поколение
+                    // снимаем сейчас: к следующей записи сброс уже ничего не тронет.
+                    let generation = crate::course::commands::current_generation();
+                    tauri::async_runtime::spawn(crate::course::commands::clear_recording_block(generation));
                 });
                 let handle = app.handle().clone();
                 app.listen("transcript-update", move |event| {
@@ -652,6 +664,7 @@ pub fn run() {
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = app.handle().path().resource_dir() {
+                course::pdf::set_resource_dir(resource_path.clone());
                 let templates_dir = resource_path.join("templates");
                 log::info!("Setting bundled templates directory to: {:?}", templates_dir);
                 summary::templates::set_bundled_templates_dir(templates_dir);
@@ -694,6 +707,18 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            course::commands::course_set_recording_subject,
+            course::commands::course_live_status,
+            course::commands::course_list,
+            course::commands::course_add_files,
+            course::commands::course_set_use,
+            course::commands::course_remove,
+            course::commands::course_reread,
+            course::commands::course_pages,
+            course::commands::course_set_folder,
+            course::commands::course_refresh,
+            course::commands::course_get_settings,
+            course::commands::course_save_settings,
             claude_session::commands::assistant_ask,
             claude_session::commands::assistant_live_turns,
             claude_session::commands::assistant_status,

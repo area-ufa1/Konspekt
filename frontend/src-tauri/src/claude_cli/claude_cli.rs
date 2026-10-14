@@ -570,6 +570,22 @@ impl Drop for SystemPromptFile {
     }
 }
 
+/// System prompt files left by an earlier run that was killed or crashed:
+/// `Drop` never ran, and a dialog's prompt holds the course materials in
+/// plaintext. Called once at startup, before any call can create a new one.
+/// Returns how many were removed.
+pub(crate) fn remove_stale_prompt_files(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with("system-prompt-") && name.ends_with(".txt")
+        })
+        .filter(|entry| std::fs::remove_file(entry.path()).is_ok())
+        .count()
+}
+
 /// Model names come from settings and end up on a command line, which runs
 /// under cmd.exe for `.cmd` shims. Aliases (`sonnet`, `opus[1m]`) and model IDs
 /// only need these characters.
@@ -610,6 +626,31 @@ pub async fn generate(
     user_prompt: &str,
     cancellation_token: Option<&CancellationToken>,
 ) -> Result<String, String> {
+    run_print(configured_path, model_name, system_prompt, user_prompt, "", None, cancellation_token).await
+}
+
+/// Like `generate`, but the model may use the Read tool, and only inside
+/// `folder` (also the process's working folder). Used to read a page image
+/// that was written there: images over stream-json crash the CLI on Windows.
+pub async fn generate_reading_files(
+    configured_path: Option<&str>,
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    folder: &Path,
+) -> Result<String, String> {
+    run_print(configured_path, model_name, system_prompt, user_prompt, "Read", Some(folder), None).await
+}
+
+async fn run_print(
+    configured_path: Option<&str>,
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    tools: &str,
+    folder: Option<&Path>,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<String, String> {
     if crate::network_policy::local_only() {
         return Err(LOCAL_ONLY_REFUSAL.to_string());
     }
@@ -632,6 +673,14 @@ pub async fn generate(
         .0
         .to_str()
         .ok_or_else(|| "The Claude Code CLI working folder has an unreadable path".to_string())?;
+    let folder_arg = match folder {
+        Some(folder) => Some(
+            folder
+                .to_str()
+                .ok_or_else(|| "The Claude Code CLI working folder has an unreadable path".to_string())?,
+        ),
+        None => None,
+    };
 
     // Strip the CLI down to a plain text-in/text-out model call: no tools, no
     // MCP servers, no user settings, no saved session, so a user's hooks and
@@ -644,7 +693,7 @@ pub async fn generate(
         "--system-prompt-file",
         prompt_path,
         "--tools",
-        "",
+        tools,
         "--permission-mode",
         "dontAsk",
         "--disable-slash-commands",
@@ -653,6 +702,11 @@ pub async fn generate(
         "",
         "--no-session-persistence",
     ];
+
+    if let Some(folder_arg) = folder_arg {
+        // Scoped rule: bare `Read` would let the model read any file on the machine.
+        args.extend(["--allowedTools", "Read(./**)", "--add-dir", folder_arg]);
+    }
 
     if !model.is_empty() && model != "default" {
         args.push("--model");
@@ -665,8 +719,9 @@ pub async fn generate(
         binary.display()
     );
 
+    let run_in = folder.unwrap_or(&working_dir);
     let output = run_command(
-        build_command(&binary, &args, &working_dir)?,
+        build_command(&binary, &args, run_in)?,
         Some(user_prompt.to_string()),
         GENERATION_TIMEOUT,
         cancellation_token,
@@ -839,5 +894,20 @@ mod tests {
             file.0.clone()
         };
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn stale_system_prompt_files_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join("system-prompt-0b1c.txt");
+        std::fs::write(&stale, "материалы").unwrap();
+        let other = dir.path().join("notes.txt");
+        std::fs::write(&other, "x").unwrap();
+        std::fs::create_dir(dir.path().join("pages-1")).unwrap();
+        assert_eq!(remove_stale_prompt_files(dir.path()), 1);
+        assert!(!stale.exists());
+        assert!(other.exists());
+        assert!(dir.path().join("pages-1").exists());
+        assert_eq!(remove_stale_prompt_files(&dir.path().join("missing")), 0);
     }
 }

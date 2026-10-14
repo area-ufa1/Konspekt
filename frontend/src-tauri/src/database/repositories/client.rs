@@ -198,6 +198,18 @@ impl ClientsRepository {
             .await?
             .rows_affected();
 
+        // Foreign keys are not enforced on every connection: course material goes explicitly.
+        sqlx::query(
+            "DELETE FROM course_pages WHERE file_id IN (SELECT id FROM course_files WHERE client_id = ?)",
+        )
+        .bind(client_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query("DELETE FROM course_files WHERE client_id = ?")
+            .bind(client_id)
+            .execute(&mut *transaction)
+            .await?;
+
         let removed = sqlx::query("DELETE FROM clients WHERE id = ?")
             .bind(client_id)
             .execute(&mut *transaction)
@@ -369,6 +381,13 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE course_files (id TEXT PRIMARY KEY, client_id TEXT NOT NULL);
+             CREATE TABLE course_pages (file_id TEXT NOT NULL, number INTEGER NOT NULL);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         pool
     }
 
@@ -506,6 +525,38 @@ mod tests {
         assert_eq!(remaining, 2);
         assert_eq!(client_of(&pool, "meeting-1").await, None);
         assert!(ClientsRepository::list(&pool).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_client_removes_its_course_files_and_pages() {
+        let pool = test_pool().await;
+        let anna = ClientsRepository::create(&pool, "Anna").await.unwrap();
+        let boris = ClientsRepository::create(&pool, "Boris").await.unwrap();
+        for (file, owner) in [("f1", &anna.id), ("f2", &boris.id)] {
+            sqlx::query("INSERT INTO course_files VALUES (?, ?)")
+                .bind(file)
+                .bind(owner)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::raw_sql("INSERT INTO course_pages VALUES ('f1', 1), ('f1', 2), ('f2', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        ClientsRepository::delete(&pool, &anna.id).await.unwrap();
+
+        let files: Vec<String> = sqlx::query_scalar("SELECT id FROM course_files")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let pages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM course_pages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(files, vec!["f2".to_string()]);
+        assert_eq!(pages, 1);
     }
 
     #[tokio::test]

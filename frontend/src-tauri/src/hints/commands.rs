@@ -32,7 +32,10 @@ pub async fn setup_for_hints(pool: &sqlx::SqlitePool, settings: &HintSettings) -
     if !settings.enabled {
         return StartSetup::Unavailable(OFF.into());
     }
-    crate::claude_session::commands::setup_with_prompt(pool, HINT_SYSTEM_PROMPT).await
+    let course = crate::course::store::get_settings(pool).await.unwrap_or_default();
+    let block = if course.in_hints && crate::claude_session::commands::uses_dialog_provider(pool).await { crate::course::commands::block_for_recording(pool).await } else { None };
+    crate::claude_session::commands::setup_with_prompt(pool, HINT_SYSTEM_PROMPT, block.as_ref().map(|b| b.text.as_str()))
+        .await
 }
 
 /// Строка расшифровки из `transcript-update`: кандидат — в слот.

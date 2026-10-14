@@ -61,6 +61,81 @@ fn strip_title_if_present(markdown: &str) -> String {
 
 const ENGLISH_CACHE_FIELD: &str = "english_cache";
 
+/// Берут ли материалы предмета: только Claude Code (claude-cli) — переключатель «В выжимке
+/// пары» виден только у него. Остальным облачным (OpenAI, Groq, OpenRouter, ключ Claude,
+/// свой адрес) 80 тыс. токенов материалов без видимого выключателя не шлём; у встроенной
+/// модели и Ollama окно и так мало.
+fn provider_takes_materials(provider: &LLMProvider) -> bool {
+    matches!(provider, LLMProvider::ClaudeCli)
+}
+
+/// Материалы предмета встречи — перед пользовательским контекстом выжимки.
+/// Обезличивание делает `llm_client` для обоих промптов.
+async fn with_course_block(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    provider: &LLMProvider,
+    custom_prompt: String,
+) -> String {
+    if !provider_takes_materials(provider) {
+        return custom_prompt;
+    }
+    let settings = crate::course::store::get_settings(pool).await.unwrap_or_default();
+    if !settings.in_summary {
+        return custom_prompt;
+    }
+    let client: Option<Option<String>> = sqlx::query_scalar("SELECT client_id FROM meetings WHERE id = ?")
+        .bind(meeting_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let Some(client_id) = client.flatten() else { return custom_prompt };
+    match crate::course::context::load(pool, &client_id, Some(meeting_id)).await {
+        Ok(Some(block)) => merge_course_text(&block.text, custom_prompt),
+        _ => custom_prompt,
+    }
+}
+
+/// Текст материалов перед пользовательским контекстом; пустой текст ничего не меняет.
+fn merge_course_text(course: &str, custom_prompt: String) -> String {
+    if course.trim().is_empty() {
+        custom_prompt
+    } else if custom_prompt.trim().is_empty() {
+        course.to_string()
+    } else {
+        format!("{course}\n\n{custom_prompt}")
+    }
+}
+
+#[cfg(test)]
+mod course_block_tests {
+    use super::*;
+
+    #[test]
+    fn only_claude_code_takes_materials() {
+        assert!(provider_takes_materials(&LLMProvider::ClaudeCli));
+        for other in [
+            LLMProvider::Claude,
+            LLMProvider::OpenAI,
+            LLMProvider::Groq,
+            LLMProvider::OpenRouter,
+            LLMProvider::CustomOpenAI,
+            LLMProvider::BuiltInAI,
+            LLMProvider::Ollama,
+        ] {
+            assert!(!provider_takes_materials(&other), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn empty_materials_leave_the_prompt_alone() {
+        assert_eq!(merge_course_text("  ", "ctx".into()), "ctx");
+        assert_eq!(merge_course_text("M", String::new()), "M");
+        assert_eq!(merge_course_text("M", "ctx".into()), "M\n\nctx");
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SummaryCacheSource {
     transcript_fingerprint: String,
@@ -637,6 +712,8 @@ impl SummaryService {
         .await;
         let hidden =
             crate::privacy::vocabulary::shield_with_names(&pool, Some(&meeting_id), found_names).await;
+        // Материалы предмета — только сюда, после отпечатка кэша: иначе их смена сбрасывала бы кэш.
+        let custom_prompt = with_course_block(&pool, &meeting_id, &provider, custom_prompt).await;
         let result = generate_meeting_summary(
             &client,
             &provider,

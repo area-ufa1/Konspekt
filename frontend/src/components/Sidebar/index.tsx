@@ -25,7 +25,7 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, Upload, User, Users, FolderInput, Inbox } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, Upload, User, Users, FolderInput, Inbox, BookOpen } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar, UNASSIGNED_FOLDER_ID, clientFolderId } from './SidebarProvider';
@@ -62,6 +62,7 @@ import {
   sidebarFromDrag,
 } from '@/lib/panel-layout';
 import { ComplianceNotification } from '../ComplianceNotification';
+import { CourseMaterialsDialog } from '../Course/CourseMaterialsDialog';
 
 /** Which folders were left open, so the tree looks the same after a restart. */
 const EXPANDED_FOLDERS_KEY = 'meetily_expanded_folders';
@@ -121,6 +122,7 @@ interface DeleteMeetingResult {
 const Sidebar: React.FC = () => {
   const t = useTranslations('sidebar');
   const tc = useTranslations('common');
+  const tcourse = useTranslations('course');
   const router = useRouter();
   const pathname = usePathname();
   const {
@@ -211,6 +213,7 @@ const Sidebar: React.FC = () => {
   const [showAllMeetings, setShowAllMeetings] = useState(false);
 
   // Client folders: create, rename, delete, and filing a recording under one.
+  const [courseDialog, setCourseDialog] = useState<{ clientId: string; subject: string } | null>(null);
   const [clientDialog, setClientDialog] = useState<{ mode: 'create' | 'rename'; clientId: string | null; name: string } | null>(null);
   const [clientDeleteState, setClientDeleteState] = useState<{ id: string; name: string; meetingCount: number } | null>(null);
   const [assignDialogMeetingId, setAssignDialogMeetingId] = useState<string | null>(null);
@@ -781,6 +784,17 @@ const Sidebar: React.FC = () => {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
+                      setCourseDialog({ clientId: item.clientId!, subject: item.title });
+                    }}
+                    className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-[var(--af-hover)] hover:text-[var(--af-accent)]"
+                    aria-label={tcourse('menu')}
+                    title={tcourse('menu')}
+                  >
+                    <BookOpen className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
                       setClientDialog({ mode: 'rename', clientId: item.clientId!, name: item.title });
                     }}
                     className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-[var(--af-hover)] hover:text-[var(--af-accent)]"
@@ -1072,6 +1086,15 @@ const Sidebar: React.FC = () => {
         onConfirm={handleClientDelete}
         onCancel={() => setClientDeleteState(null)}
       />
+
+      {courseDialog && (
+        <CourseMaterialsDialog
+          clientId={courseDialog.clientId}
+          subject={courseDialog.subject}
+          open
+          onOpenChange={(open) => { if (!open) setCourseDialog(null); }}
+        />
+      )}
 
       {/* New client / rename client */}
       <Dialog open={clientDialog !== null} onOpenChange={(open) => { if (!open) setClientDialog(null); }}>

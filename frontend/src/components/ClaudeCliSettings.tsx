@@ -16,11 +16,14 @@ import {
   claudeCliBlockingReason,
   getClaudeCliPath,
   getClaudeCliStatus,
+  CourseSettings,
   getClaudeLiveModel,
+  getCourseSettings,
   getHintSettings,
   HintSettings,
   saveClaudeCliPath,
   saveClaudeLiveModel,
+  saveCourseSettings,
   saveHintSettings,
   supportsHaiku55,
   testClaudeCliConnection,
@@ -41,10 +44,13 @@ const LIVE_MODELS = ['haiku', 'sonnet', 'opus'] as const;
  */
 export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
   const t = useTranslations('claudeCli');
+  const tcourse = useTranslations('course');
   const [path, setPath] = useState('');
   const [savedPath, setSavedPath] = useState('');
   const [liveModel, setLiveModel] = useState<string>('haiku');
   const [hints, setHints] = useState<HintSettings | null>(null);
+  const [course, setCourse] = useState<CourseSettings | null>(null);
+  const [courseError, setCourseError] = useState<string | null>(null);
   const [hotkeyDraft, setHotkeyDraft] = useState('');
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const [localOnly, setLocalOnly] = useState(false);
@@ -84,6 +90,9 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
         setHints({ enabled: false, mic: false, hotkey: 'Ctrl+Shift+Space' });
         setHotkeyDraft('Ctrl+Shift+Space');
       });
+    getCourseSettings()
+      .then(setCourse)
+      .catch((error) => setCourseError(typeof error === 'string' ? error : (error as Error)?.message || String(error)));
     invoke<boolean>('get_local_only_mode')
       .then(setLocalOnly)
       .catch(() => setLocalOnly(false));
@@ -96,6 +105,16 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
       setHotkeyError(null);
     } catch (error) {
       setHotkeyError(typeof error === 'string' ? error : (error as Error)?.message || String(error));
+    }
+  };
+
+  const persistCourse = async (next: CourseSettings) => {
+    try {
+      await saveCourseSettings(next);
+      setCourse(next);
+      setCourseError(null);
+    } catch (error) {
+      setCourseError(typeof error === 'string' ? error : (error as Error)?.message || String(error));
     }
   };
 
@@ -288,6 +307,27 @@ export function ClaudeCliSettings({ onStatusChange }: ClaudeCliSettingsProps) {
             <p className="text-xs text-muted-foreground mt-1">{t('hintsHotkeyHint')}</p>
             {hotkeyError && <p className="text-xs text-red-600 mt-1">{hotkeyError}</p>}
           </div>
+        </div>
+      )}
+
+      {(course || courseError) && (
+        <div className="space-y-3">
+          <div>
+            <h4 className="text-sm font-medium">{tcourse('settingsTitle')}</h4>
+            <p className="text-xs text-muted-foreground mt-1">{tcourse('settingsHint')}</p>
+            {courseError && <p className="text-xs text-red-600 mt-1">{courseError}</p>}
+          </div>
+          {([
+            ['inAssistant', 'settingsAssistant'],
+            ['inHints', 'settingsHints'],
+            ['inSummary', 'settingsSummary'],
+          ] as const).map(([field, label]) => (
+            <div key={field} className="flex items-center justify-between gap-3">
+              <Label htmlFor={`course-${field}`}>{tcourse(label)}</Label>
+              <Switch id={`course-${field}`} checked={course?.[field] ?? false} disabled={!course}
+                onCheckedChange={(value) => { if (course) void persistCourse({ ...course, [field]: value }); }} />
+            </div>
+          ))}
         </div>
       )}
 

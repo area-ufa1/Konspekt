@@ -27,6 +27,13 @@ if ($mode -eq 'print') {
   Say (@{ type = 'result'; subtype = 'success'; is_error = $false; result = "print len $($prompt.Length)" } | ConvertTo-Json -Compress)
   exit 0
 }
+if ($mode -eq 'read') {
+  # Как --print, но отвечает, лежит ли page.png в рабочей папке. Флаги проверяет Rust по args.txt.
+  $prompt = [Console]::In.ReadToEnd()
+  $page = Test-Path (Join-Path (Get-Location) 'page.png')
+  Say (@{ type = 'result'; subtype = 'success'; is_error = $false; result = "read page=$page" } | ConvertTo-Json -Compress)
+  exit 0
+}
 if ($mode -eq 'hang') {
   # Как node за npm-обёрткой: внук, который живёт сам по себе, и сам процесс,
   # который не выходит по закрытому stdin. Достать их может только убийство дерева.

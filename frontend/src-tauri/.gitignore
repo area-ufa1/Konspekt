@@ -14,4 +14,6 @@ installer-variants/*
 licenses/ffmpeg/LICENSE.txt
 licenses/ffmpeg/BUILD.txt
 licenses/ffmpeg/*.partial
-
+# PDFium for course materials, taken from its pinned archive by build/pdfium.rs
+resources/pdfium/
+licenses/pdfium/

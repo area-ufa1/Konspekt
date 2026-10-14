@@ -330,6 +330,12 @@ impl Session {
         restored
     }
 
+    /// Whether the vocabulary names anything to hide (names or the owner's terms).
+    /// A picture cannot be hidden, so callers that send pictures check this.
+    pub fn has_vocabulary(&self) -> bool {
+        !self.vocabulary.names.is_empty() || !self.vocabulary.terms.is_empty()
+    }
+
     /// Whether anything was actually replaced.
     pub fn is_empty(&self) -> bool {
         self.order.is_empty()

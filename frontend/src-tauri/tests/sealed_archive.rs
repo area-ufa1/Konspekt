@@ -100,6 +100,7 @@ async fn with_schema(pool: SqlitePool) -> SqlitePool {
         include_str!("../migrations/20261010000000_add_claude_cli_settings.sql"),
         include_str!("../migrations/20261010010000_add_assistant_turns.sql"),
         include_str!("../migrations/20261013010000_add_assistant_turn_kind.sql"),
+        include_str!("../migrations/20261014000000_add_course_materials.sql"),
     ] {
         sqlx::raw_sql(migration).execute(&pool).await.unwrap();
     }
@@ -850,4 +851,70 @@ async fn settings_written_before_this_convert_and_convert_back() {
     for secret in ["Анна Петрова", "Пульсарова", "openai-key-for-tests", "stt-token-for-tests"] {
         assert!(stored.contains(secret), "{secret:?} did not come back");
     }
+}
+
+#[tokio::test]
+async fn course_material_is_not_in_the_database_file() {
+    use app_lib::course::store::{self, CourseFile, FileState, Source, StoredPage};
+    use app_lib::course::FileKind;
+
+    let pool = archive().await;
+    sqlx::query(
+        "INSERT INTO clients (id, display_name, normalized_name, notes, created_at, updated_at) \
+             VALUES ('c1', 'Анна', 'анна', NULL, 'n', 'n')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let file = CourseFile {
+        id: "f1".into(),
+        client_id: "c1".into(),
+        name: "Лекция про нормализацию.pdf".into(),
+        kind: FileKind::Pdf,
+        source: Source::Folder,
+        folder_path: Some("D:/Учёба/Секретная папка/лекция.pdf".into()),
+        size: 1,
+        modified: "n".into(),
+        hash: "h".into(),
+        use_flag: true,
+        state: FileState::Ready,
+        error: None,
+        pages: 0,
+        pages_waiting: 0,
+        pages_by_claude: 0,
+        tokens: 0,
+        added_at: "n".into(),
+    };
+    store::insert_file(&pool, &file).await.unwrap();
+    store::replace_pages(
+        &pool,
+        "f1",
+        &[StoredPage { number: 1, text: "Вторая нормальная форма".into(), by_claude: false, waits_claude: false }],
+    )
+    .await
+    .unwrap();
+    store::set_folder(&pool, "c1", Some("D:/Учёба/Секретная папка")).await.unwrap();
+
+    let mut stored = String::new();
+    for query in [
+        "SELECT name FROM course_files",
+        "SELECT folder_path FROM course_files",
+        "SELECT text FROM course_pages",
+        "SELECT course_folder FROM clients",
+    ] {
+        let rows: Vec<(String,)> = sqlx::query_as(query).fetch_all(&pool).await.unwrap();
+        for (value,) in rows {
+            stored.push_str(&value);
+            stored.push('\n');
+        }
+    }
+    for word in ["нормализац", "Секретная", "нормальная"] {
+        assert!(!stored.contains(word), "{word} found in the database: {stored}");
+    }
+
+    let listed = store::list_files(&pool, "c1").await.unwrap();
+    assert_eq!(listed[0].name, "Лекция про нормализацию.pdf");
+    assert_eq!(listed[0].folder_path.as_deref(), Some("D:/Учёба/Секретная папка/лекция.pdf"));
+    assert_eq!(store::pages(&pool, "f1").await.unwrap()[0].text, "Вторая нормальная форма");
+    assert_eq!(store::get_folder(&pool, "c1").await.unwrap().as_deref(), Some("D:/Учёба/Секретная папка"));
 }

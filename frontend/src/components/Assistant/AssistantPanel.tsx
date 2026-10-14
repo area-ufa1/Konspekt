@@ -15,6 +15,8 @@ import { MessageSquare, Send } from 'lucide-react';
 import {
   AssistantTurn, PanelTurn, QUICK_QUESTION_KEYS, applyAnswerEvent, clock, isQuestion, mergeLiveTurns,
 } from '@/lib/assistant';
+import { statusLine } from '@/lib/course';
+import type { CourseBlock } from '@/lib/course';
 
 interface AssistantStatus { available: boolean; reason: string | null; model: string | null }
 
@@ -22,10 +24,12 @@ const STATUS_POLL_MS = 5000;
 
 export function AssistantPanel() {
   const t = useTranslations('assistant');
+  const tcourse = useTranslations('course');
   const [turns, setTurns] = useState<PanelTurn[]>([]);
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<AssistantStatus | null>(null);
+  const [course, setCourse] = useState<CourseBlock | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -41,6 +45,12 @@ export function AssistantPanel() {
         if (!stopped) setStatus(next);
       } catch {
         // Статус — подсказка; без него поле просто остаётся доступным.
+      }
+      try {
+        const block = await invoke<CourseBlock | null>('course_live_status');
+        if (!stopped) setCourse(block);
+      } catch {
+        // Строка про материалы — подсказка; без неё лента просто выше.
       }
       if (!stopped) timer = window.setTimeout(poll, STATUS_POLL_MS);
     };
@@ -80,6 +90,9 @@ export function AssistantPanel() {
     <div className="flex h-full min-h-0 flex-col">
       {unavailable && (
         <div className="mx-3 mt-3 rounded-lg border border-[var(--af-border)] bg-[var(--af-panel-2)] px-3 py-2 text-xs text-[var(--af-text-2)]">{unavailable}</div>
+      )}
+      {course && (
+        <div className="mx-4 mt-3 text-xs text-[var(--af-text-3)]">{statusLine(course, tcourse)}</div>
       )}
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {turns.length === 0 ? (

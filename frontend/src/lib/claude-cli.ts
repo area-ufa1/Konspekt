@@ -77,3 +77,13 @@ export async function getHintSettings(): Promise<HintSettings> {
 export async function saveHintSettings(settings: HintSettings): Promise<void> {
   await invoke('claude_cli_save_hint_settings', { settings });
 }
+
+export interface CourseSettings { inAssistant: boolean; inHints: boolean; inSummary: boolean }
+
+export async function getCourseSettings(): Promise<CourseSettings> {
+  return invoke<CourseSettings>('course_get_settings');
+}
+
+export async function saveCourseSettings(settings: CourseSettings): Promise<void> {
+  await invoke('course_save_settings', { settings });
+}
