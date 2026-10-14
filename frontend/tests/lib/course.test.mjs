@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { isSupported, formatTokens, capState, statusLine } from '../../src/lib/course.ts'
 
 test('only the five formats are accepted, case-insensitive', () => {
-  assert.equal(isSupported('C:\Учёба\Лекция 3.PDF'), true)
+  assert.equal(isSupported(String.raw`C:\Учёба\Лекция 3.PDF`), true)
+  assert.equal(isSupported(String.raw`C:\Учёба.pdf\Лекция`), false)
   assert.equal(isSupported('slides.pptx'), true)
   assert.equal(isSupported('old.doc'), false)
   assert.equal(isSupported('noext'), false)
