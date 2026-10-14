@@ -4,6 +4,7 @@
 pub mod office;
 pub mod pdf;
 pub mod quality;
+pub mod reader;
 pub mod store;
 
 /// Одна страница/слайд материала: текст и, если годного текста нет, картинка страницы.

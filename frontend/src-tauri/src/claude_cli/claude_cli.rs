@@ -610,6 +610,31 @@ pub async fn generate(
     user_prompt: &str,
     cancellation_token: Option<&CancellationToken>,
 ) -> Result<String, String> {
+    run_print(configured_path, model_name, system_prompt, user_prompt, "", None, cancellation_token).await
+}
+
+/// Like `generate`, but the model may use the Read tool, and only inside
+/// `folder` (also the process's working folder). Used to read a page image
+/// that was written there: images over stream-json crash the CLI on Windows.
+pub async fn generate_reading_files(
+    configured_path: Option<&str>,
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    folder: &Path,
+) -> Result<String, String> {
+    run_print(configured_path, model_name, system_prompt, user_prompt, "Read", Some(folder), None).await
+}
+
+async fn run_print(
+    configured_path: Option<&str>,
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    tools: &str,
+    folder: Option<&Path>,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<String, String> {
     if crate::network_policy::local_only() {
         return Err(LOCAL_ONLY_REFUSAL.to_string());
     }
@@ -632,6 +657,14 @@ pub async fn generate(
         .0
         .to_str()
         .ok_or_else(|| "The Claude Code CLI working folder has an unreadable path".to_string())?;
+    let folder_arg = match folder {
+        Some(folder) => Some(
+            folder
+                .to_str()
+                .ok_or_else(|| "The Claude Code CLI working folder has an unreadable path".to_string())?,
+        ),
+        None => None,
+    };
 
     // Strip the CLI down to a plain text-in/text-out model call: no tools, no
     // MCP servers, no user settings, no saved session, so a user's hooks and
@@ -644,7 +677,7 @@ pub async fn generate(
         "--system-prompt-file",
         prompt_path,
         "--tools",
-        "",
+        tools,
         "--permission-mode",
         "dontAsk",
         "--disable-slash-commands",
@@ -653,6 +686,10 @@ pub async fn generate(
         "",
         "--no-session-persistence",
     ];
+
+    if let Some(folder_arg) = folder_arg {
+        args.extend(["--allowedTools", tools, "--add-dir", folder_arg]);
+    }
 
     if !model.is_empty() && model != "default" {
         args.push("--model");
@@ -665,8 +702,9 @@ pub async fn generate(
         binary.display()
     );
 
+    let run_in = folder.unwrap_or(&working_dir);
     let output = run_command(
-        build_command(&binary, &args, &working_dir)?,
+        build_command(&binary, &args, run_in)?,
         Some(user_prompt.to_string()),
         GENERATION_TIMEOUT,
         cancellation_token,
