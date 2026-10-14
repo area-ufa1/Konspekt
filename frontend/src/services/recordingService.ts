@@ -7,6 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { getPendingRecordingClient } from '@/lib/recording-client';
 
 export interface RecordingState {
   is_recording: boolean;
@@ -65,6 +66,7 @@ export class RecordingService {
    * @returns Promise<void>
    */
   async startRecording(): Promise<void> {
+    await invoke('course_set_recording_subject', { clientId: getPendingRecordingClient() }).catch(() => {});
     return invoke('start_recording');
   }
 
@@ -80,6 +82,7 @@ export class RecordingService {
     systemDeviceName: string | null,
     meetingName: string
   ): Promise<void> {
+    await invoke('course_set_recording_subject', { clientId: getPendingRecordingClient() }).catch(() => {});
     return invoke('start_recording_with_devices_and_meeting', {
       mic_device_name: micDeviceName,
       system_device_name: systemDeviceName,

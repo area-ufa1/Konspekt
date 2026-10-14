@@ -641,6 +641,8 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         handle.state::<HintService>().dialog.finish_stop(token).await;
                     });
+                    // Запись кончилась: предмет и собранный блок больше не нужны.
+                    tauri::async_runtime::spawn(crate::course::commands::clear_recording_block());
                 });
                 let handle = app.handle().clone();
                 app.listen("transcript-update", move |event| {
@@ -696,6 +698,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            course::commands::course_set_recording_subject,
+            course::commands::course_live_status,
             claude_session::commands::assistant_ask,
             claude_session::commands::assistant_live_turns,
             claude_session::commands::assistant_status,

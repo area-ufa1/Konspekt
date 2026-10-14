@@ -20,7 +20,24 @@ struct AnswerEvent<'a> {
 
 /// Что делать с ассистентом при старте записи.
 pub async fn setup_for_recording(pool: &sqlx::SqlitePool) -> StartSetup {
-    setup_with_prompt(pool, SYSTEM_PROMPT).await
+    let settings = crate::course::store::get_settings(pool).await.unwrap_or_default();
+    let block = if settings.in_assistant { crate::course::commands::block_for_recording(pool).await } else { None };
+    setup_with_prompt(pool, SYSTEM_PROMPT, block.as_ref().map(|b| b.text.as_str())).await
+}
+
+/// Системная инструкция диалога: материалы предмета первыми, затем базовый промпт.
+pub fn compose_system_prompt(course: Option<&str>, base: &str) -> String {
+    match course {
+        Some(block) if !block.trim().is_empty() => format!("{block}
+
+{base}"),
+        _ => base.to_string(),
+    }
+}
+
+/// Инструкция, какой она уходит Claude: обезличена вместе с материалами.
+pub(crate) fn shielded_system_prompt(course: Option<&str>, base: &str, shield: crate::privacy::Shield) -> String {
+    crate::privacy::hide(shield, &compose_system_prompt(course, base))
 }
 
 /// Диалог записи бывает только у провайдера Claude Code.
@@ -36,7 +53,11 @@ pub async fn uses_dialog_provider(pool: &sqlx::SqlitePool) -> bool {
 
 /// Что делать с диалогом записи при её старте — по провайдеру из настроек;
 /// `system_prompt` у ассистента и у подсказок свой.
-pub async fn setup_with_prompt(pool: &sqlx::SqlitePool, system_prompt: &str) -> StartSetup {
+pub async fn setup_with_prompt(
+    pool: &sqlx::SqlitePool,
+    system_prompt: &str,
+    course: Option<&str>,
+) -> StartSetup {
     let Ok(Some(config)) = SettingsRepository::get_model_config(pool).await else {
         return StartSetup::Unavailable("Модель ИИ не выбрана: Настройки → Саммари".into());
     };
@@ -69,11 +90,12 @@ pub async fn setup_with_prompt(pool: &sqlx::SqlitePool, system_prompt: &str) -> 
         .await
         .unwrap_or_else(|_| crate::claude_cli::DEFAULT_LIVE_MODEL.into());
     let shield = crate::privacy::vocabulary::shield_for(pool, None).await;
+    let prompt = shielded_system_prompt(course, system_prompt, shield.as_ref());
     StartSetup::Ready {
         config: super::dialog::DialogConfig {
             binary,
             model,
-            system_prompt: system_prompt.into(),
+            system_prompt: prompt,
             idle_timeout: IDLE_TIMEOUT,
         },
         shield,
@@ -227,6 +249,26 @@ pub async fn assistant_live_turns() -> Result<Vec<AssistantTurn>, String> {
 mod tests {
     use super::*;
     use crate::audio::transcript_journal;
+    use crate::privacy::anonymize::{Session, Vocabulary};
+    use std::sync::Mutex;
+
+    #[test]
+    fn course_block_goes_before_the_base_prompt() {
+        let prompt = compose_system_prompt(Some("<course_materials>…</course_materials>"), "BASE");
+        assert!(prompt.starts_with("<course_materials>"));
+        assert!(prompt.ends_with("BASE"));
+        assert_eq!(compose_system_prompt(None, "BASE"), "BASE");
+        assert_eq!(compose_system_prompt(Some("  "), "BASE"), "BASE");
+    }
+
+    #[test]
+    fn system_prompt_with_materials_is_shielded() {
+        let shield = Mutex::new(Session::new(Vocabulary { names: vec!["Иванов".into()], terms: Vec::new() }));
+        let prompt = shielded_system_prompt(Some("Преподаватель: Иванов И.И."), "BASE", Some(&shield));
+        assert!(!prompt.contains("Иванов"), "{prompt}");
+        assert!(prompt.ends_with("BASE"));
+        assert!(crate::privacy::restore(Some(&shield), &prompt).contains("Иванов"));
+    }
 
     fn turn() -> AssistantTurn {
         AssistantTurn {

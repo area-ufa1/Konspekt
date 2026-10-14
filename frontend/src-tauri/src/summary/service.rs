@@ -61,6 +61,43 @@ fn strip_title_if_present(markdown: &str) -> String {
 
 const ENGLISH_CACHE_FIELD: &str = "english_cache";
 
+/// Берут ли материалы предмета: у встроенной модели и Ollama окно мало (у встроенной — 1748 токенов).
+fn provider_takes_materials(provider: &LLMProvider) -> bool {
+    !matches!(provider, LLMProvider::BuiltInAI | LLMProvider::Ollama)
+}
+
+/// Материалы предмета встречи — перед пользовательским контекстом выжимки.
+/// Обезличивание делает `llm_client` для обоих промптов.
+async fn with_course_block(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    provider: &LLMProvider,
+    custom_prompt: String,
+) -> String {
+    if !provider_takes_materials(provider) {
+        return custom_prompt;
+    }
+    let settings = crate::course::store::get_settings(pool).await.unwrap_or_default();
+    if !settings.in_summary {
+        return custom_prompt;
+    }
+    let client: Option<Option<String>> = sqlx::query_scalar("SELECT client_id FROM meetings WHERE id = ?")
+        .bind(meeting_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let Some(client_id) = client.flatten() else { return custom_prompt };
+    match crate::course::context::load(pool, &client_id, Some(meeting_id)).await {
+        Ok(Some(block)) if block.text.trim().is_empty() => custom_prompt,
+        Ok(Some(block)) if custom_prompt.trim().is_empty() => block.text,
+        Ok(Some(block)) => format!("{}
+
+{}", block.text, custom_prompt),
+        _ => custom_prompt,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SummaryCacheSource {
     transcript_fingerprint: String,
@@ -637,6 +674,8 @@ impl SummaryService {
         .await;
         let hidden =
             crate::privacy::vocabulary::shield_with_names(&pool, Some(&meeting_id), found_names).await;
+        // Материалы предмета — только сюда, после отпечатка кэша: иначе их смена сбрасывала бы кэш.
+        let custom_prompt = with_course_block(&pool, &meeting_id, &provider, custom_prompt).await;
         let result = generate_meeting_summary(
             &client,
             &provider,
