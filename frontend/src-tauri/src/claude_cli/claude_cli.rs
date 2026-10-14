@@ -688,7 +688,8 @@ async fn run_print(
     ];
 
     if let Some(folder_arg) = folder_arg {
-        args.extend(["--allowedTools", tools, "--add-dir", folder_arg]);
+        // Scoped rule: bare `Read` would let the model read any file on the machine.
+        args.extend(["--allowedTools", "Read(./**)", "--add-dir", folder_arg]);
     }
 
     if !model.is_empty() && model != "default" {
