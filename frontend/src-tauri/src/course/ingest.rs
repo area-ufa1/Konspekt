@@ -77,7 +77,9 @@ pub async fn ingest_file(
 ) -> Result<CourseFile, String> {
     let name = incoming.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut file = match existing {
-        Some(old) => CourseFile { name: name.clone(), source: incoming.source, ..old.clone() },
+        // Источник старой строки сохраняем: файл, добавленный вручную, лежащий в папке, остаётся `Added`
+        // и синхронизация его не удаляет.
+        Some(old) => CourseFile { name: name.clone(), ..old.clone() },
         None => CourseFile {
             id: uuid::Uuid::new_v4().to_string(),
             client_id: client_id.to_string(),
@@ -177,24 +179,49 @@ fn is_hidden(name: &str, metadata: &std::fs::Metadata) -> bool {
     false
 }
 
+struct Walked {
+    files: Vec<(PathBuf, std::fs::Metadata)>,
+    /// Подпапки и записи, которые не удалось прочитать: строки под ними не удаляем.
+    unreadable: Vec<PathBuf>,
+}
+
+/// Лежит ли путь под одним из нечитаемых мест.
+fn is_under_unreadable(path: &str, unreadable: &[PathBuf]) -> bool {
+    unreadable.iter().any(|prefix| Path::new(path).starts_with(prefix))
+}
+
 /// Файлы папки (рекурсивно); `None` — корень не читается.
-fn walk(root: &Path) -> Option<Vec<(PathBuf, std::fs::Metadata)>> {
+fn walk(root: &Path) -> Option<Walked> {
     let mut found = Vec::new();
+    let mut unreadable = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     let mut first = true;
     while let Some(dir) = stack.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(_) if first => return None,
-            Err(_) => continue,
+            Err(_) => {
+                unreadable.push(dir);
+                continue;
+            }
         };
         first = false;
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else { continue };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                unreadable.push(dir.clone());
+                continue;
+            };
+            let Ok(file_type) = entry.file_type() else {
+                unreadable.push(entry.path());
+                continue;
+            };
             if file_type.is_symlink() {
                 continue;
             }
-            let Ok(metadata) = entry.metadata() else { continue };
+            let Ok(metadata) = entry.metadata() else {
+                unreadable.push(entry.path());
+                continue;
+            };
             if is_hidden(&entry.file_name().to_string_lossy(), &metadata) {
                 continue;
             }
@@ -205,7 +232,7 @@ fn walk(root: &Path) -> Option<Vec<(PathBuf, std::fs::Metadata)>> {
             }
         }
     }
-    Some(found)
+    Some(Walked { files: found, unreadable })
 }
 
 /// Обойти папку: новые/изменённые — `ingest_file`, исчезнувшие — `delete_file`.
@@ -225,7 +252,8 @@ pub async fn sync_folder(pool: &SqlitePool, client_id: &str) -> Result<SyncRepor
 
     let known = store::list_files(pool, client_id).await.map_err(db_error)?;
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (path, metadata) in walked {
+    let Walked { files, unreadable } = walked;
+    for (path, metadata) in files {
         let path_text = path_string(&path);
         seen.insert(path_text.clone());
         let incoming = Incoming { path: path.clone(), source: Source::Folder };
@@ -236,13 +264,19 @@ pub async fn sync_folder(pool: &SqlitePool, client_id: &str) -> Result<SyncRepor
             continue;
         };
         let modified = modified_rfc3339(&metadata);
-        if existing.size == metadata.len() as i64 && existing.modified == modified {
+        // Строка с ошибкой или без хэша (сбой чтения, формат, размер) не «без изменений»: пробуем снова.
+        let trusted = existing.state != FileState::Error && !existing.hash.is_empty();
+        if trusted && existing.size == metadata.len() as i64 && existing.modified == modified {
             report.unchanged += 1;
             continue;
         }
-        let same_content = match tokio::fs::read(&path).await {
-            Ok(bytes) => metadata.len() <= MAX_FILE_BYTES && hash_hex(&bytes) == existing.hash,
-            Err(_) => false,
+        let same_content = if trusted && metadata.len() <= MAX_FILE_BYTES {
+            match tokio::fs::read(&path).await {
+                Ok(bytes) => hash_hex(&bytes) == existing.hash,
+                Err(_) => false,
+            }
+        } else {
+            false
         };
         if same_content {
             let mut touched = existing.clone();
@@ -256,7 +290,10 @@ pub async fn sync_folder(pool: &SqlitePool, client_id: &str) -> Result<SyncRepor
         }
     }
     for file in known.iter().filter(|file| file.source == Source::Folder) {
-        let gone = file.folder_path.as_deref().is_none_or(|path| !seen.contains(path));
+        let gone = file
+            .folder_path
+            .as_deref()
+            .is_none_or(|path| !seen.contains(path) && !is_under_unreadable(path, &unreadable));
         if gone {
             store::delete_file(pool, &file.id).await.map_err(db_error)?;
             report.removed += 1;
@@ -280,20 +317,26 @@ where
     let Some(mut file) = find_file(pool, file_id).await? else {
         return Err("Файл не найден".to_string());
     };
+    if file.state == FileState::Error {
+        return Ok(());
+    }
     let stored = store::pages(pool, file_id).await.map_err(db_error)?;
     let waiting: Vec<u32> = stored.iter().filter(|page| page.waits_claude).map(|page| page.number).collect();
     if waiting.is_empty() {
-        return refresh_file(pool, &mut file, None).await;
+        if file.state == FileState::WaitsClaude {
+            return refresh_file(pool, &mut file, None).await;
+        }
+        return Ok(());
     }
 
     // Оригинал: тот же файл, что читали (по хэшу), иначе номера страниц не сойдутся.
     let original = match file.folder_path.clone() {
         Some(path) => load_original(&path, file.kind, &file.hash).await,
-        None => Err(ORIGINAL_UNAVAILABLE),
+        None => Err(ORIGINAL_UNAVAILABLE.to_string()),
     };
     let pages = match original {
         Ok(pages) => pages,
-        Err(reason) => return refresh_file(pool, &mut file, Some(reason)).await,
+        Err(reason) => return refresh_file(pool, &mut file, Some(&reason)).await,
     };
 
     let total = waiting.len() as u32;
@@ -335,15 +378,14 @@ async fn find_file(pool: &SqlitePool, file_id: &str) -> Result<Option<CourseFile
     Ok(store::list_files(pool, &client_id).await.map_err(db_error)?.into_iter().find(|f| f.id == file_id))
 }
 
-async fn load_original(path: &str, kind: FileKind, hash: &str) -> Result<Vec<super::PageOut>, &'static str> {
-    let bytes = tokio::fs::read(path).await.map_err(|_| ORIGINAL_UNAVAILABLE)?;
+async fn load_original(path: &str, kind: FileKind, hash: &str) -> Result<Vec<super::PageOut>, String> {
+    let bytes = tokio::fs::read(path).await.map_err(|_| ORIGINAL_UNAVAILABLE.to_string())?;
     if hash_hex(&bytes) != hash {
-        return Err(ORIGINAL_CHANGED);
+        return Err(ORIGINAL_CHANGED.to_string());
     }
     tokio::task::spawn_blocking(move || super::extract(kind, &bytes))
         .await
-        .map_err(|_| ORIGINAL_UNAVAILABLE)?
-        .map_err(|_| ORIGINAL_UNAVAILABLE)
+        .map_err(|_| "Чтение файла прервалось".to_string())?
 }
 
 /// Пересчитывает `tokens` и `state` по сохранённым страницам; `problem` остаётся в `error` для ждущих.
@@ -467,6 +509,11 @@ mod tests {
         // Только дата — не перечитывается; содержимое — перечитывается; удалённый — исчезает.
         let a = dir.path().join("a.txt");
         let same = std::fs::read(&a).unwrap();
+        let before = store::list_files(&pool, "c1").await.unwrap().into_iter().find(|f| f.name == "a.txt").unwrap();
+        let mut flagged = before.clone();
+        flagged.use_flag = false;
+        store::update_file(&pool, &flagged).await.unwrap();
+        store::set_page_text(&pool, &before.id, 1, "Поправлено Claude", true).await.unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         std::fs::write(&a, &same).unwrap();
         std::fs::write(dir.path().join("Лабы").join("b.md"), "# Лаба 1\nДругой текст про внешние ключи и каскадное удаление. ".repeat(5)).unwrap();
@@ -474,6 +521,10 @@ mod tests {
         let report = sync_folder(&pool, "c1").await.unwrap();
         assert_eq!((report.added, report.changed, report.unchanged), (1, 1, 1), "c.doc — новый (строка с ошибкой формата)");
         let files = store::list_files(&pool, "c1").await.unwrap();
+        let touched = files.iter().find(|f| f.name == "a.txt").unwrap();
+        assert_ne!(touched.modified, before.modified);
+        assert!(!touched.use_flag);
+        assert!(store::pages(&pool, &touched.id).await.unwrap()[0].by_claude);
         let doc = files.iter().find(|f| f.name == "c.doc").unwrap();
         assert_eq!(doc.state, FileState::Error);
         assert!(!doc.error.as_ref().unwrap().contains("c.doc"));
@@ -481,6 +532,78 @@ mod tests {
         assert_eq!(sync_folder(&pool, "c1").await.unwrap().removed, 1);
         let names: Vec<String> = store::list_files(&pool, "c1").await.unwrap().into_iter().map(|f| f.name).collect();
         assert!(!names.contains(&"a.txt".to_string()));
+    }
+
+    #[tokio::test]
+    async fn read_waiting_pages_leaves_an_error_row_alone() {
+        let (pool, dir) = setup("c1").await;
+        let path = dir.path().join("note.doc");
+        std::fs::write(&path, b"old").unwrap();
+        let file = ingest_file(&pool, "c1", &Incoming { path, source: Source::Added }, None, |_| {}).await.unwrap();
+        assert_eq!(file.state, FileState::Error);
+        read_waiting_pages(&pool, &file.id, |_| async { panic!("Claude не должен вызываться") }, |_| {})
+            .await
+            .unwrap();
+        let after = store::list_files(&pool, "c1").await.unwrap().remove(0);
+        assert_eq!((after.state, after.error), (FileState::Error, file.error));
+    }
+
+    #[tokio::test]
+    async fn an_error_row_is_retried_on_the_next_sync() {
+        let (pool, dir) = setup("c1").await;
+        let path = dir.path().join("late.txt");
+        std::fs::write(&path, "Агрегатные функции и группировка. ".repeat(5)).unwrap();
+        // Строка с ошибкой и пустым хэшем, как после сбоя чтения посреди сохранения.
+        let metadata = std::fs::metadata(&path).unwrap();
+        let broken = CourseFile {
+            id: "f1".into(),
+            client_id: "c1".into(),
+            name: "late.txt".into(),
+            kind: FileKind::Txt,
+            source: Source::Folder,
+            folder_path: Some(path_string(&path)),
+            size: metadata.len() as i64,
+            modified: modified_rfc3339(&metadata),
+            hash: String::new(),
+            use_flag: true,
+            state: FileState::Error,
+            error: Some("Не удалось прочитать файл".into()),
+            pages: 0,
+            pages_waiting: 0,
+            pages_by_claude: 0,
+            tokens: 0,
+            added_at: "2026-10-14T10:00:00Z".into(),
+        };
+        store::insert_file(&pool, &broken).await.unwrap();
+        store::set_folder(&pool, "c1", Some(dir.path().to_str().unwrap())).await.unwrap();
+        let report = sync_folder(&pool, "c1").await.unwrap();
+        assert_eq!((report.changed, report.unchanged), (1, 0));
+        let after = store::list_files(&pool, "c1").await.unwrap().remove(0);
+        assert_eq!((after.state, after.pages), (FileState::Ready, 1));
+    }
+
+    #[test]
+    fn rows_under_unreadable_places_are_not_deleted() {
+        let unreadable = vec![PathBuf::from("D:\\Учёба\\Лабы")];
+        assert!(is_under_unreadable("D:\\Учёба\\Лабы\\b.md", &unreadable));
+        assert!(!is_under_unreadable("D:\\Учёба\\Лабы2\\b.md", &unreadable));
+        assert!(!is_under_unreadable("D:\\Учёба\\a.txt", &unreadable));
+    }
+
+    #[tokio::test]
+    async fn an_added_file_inside_the_folder_stays_added() {
+        let (pool, dir) = setup("c1").await;
+        let path = dir.path().join("mine.txt");
+        std::fs::write(&path, "Ручной файл про индексы. ".repeat(5)).unwrap();
+        ingest_file(&pool, "c1", &Incoming { path: path.clone(), source: Source::Added }, None, |_| {}).await.unwrap();
+        store::set_folder(&pool, "c1", Some(dir.path().to_str().unwrap())).await.unwrap();
+        std::fs::write(&path, "Другой текст про представления. ".repeat(5)).unwrap();
+        let report = sync_folder(&pool, "c1").await.unwrap();
+        assert_eq!((report.added, report.changed), (0, 1));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(sync_folder(&pool, "c1").await.unwrap().removed, 0);
+        let file = store::list_files(&pool, "c1").await.unwrap().remove(0);
+        assert_eq!(file.source, Source::Added);
     }
 
     #[tokio::test]
