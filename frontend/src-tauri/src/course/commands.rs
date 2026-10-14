@@ -243,6 +243,9 @@ enum Job {
     Sync,
     /// Только дочитать картинки (при открытии окна).
     Waiting,
+    /// Папку отвязали: файлы из неё уходят из материалов. Под `WORK`, чтобы идущее
+    /// чтение не дописало страницы или строки уже после удаления.
+    Unbind,
 }
 
 fn notify<R: Runtime>(app: &AppHandle<R>, client_id: &str) {
@@ -310,6 +313,14 @@ async fn run<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client_id: &str,
             notify(app, client_id);
         }
         Job::Waiting => {}
+        Job::Unbind => {
+            match store::delete_folder_files(pool, client_id).await {
+                Ok(removed) => log::info!("Материалы: папку отвязали, файлов убрано {removed}"),
+                Err(error) => log::warn!("Материалы: файлы папки не убраны: {}", first_line(&error.to_string())),
+            }
+            notify(app, client_id);
+            return;
+        }
     }
     let read = read_pictures(app, pool, client_id).await;
     // Из списка (`Waiting`) — только если что-то прочиталось: иначе отказ Claude
@@ -496,9 +507,8 @@ pub async fn course_set_folder<R: Runtime>(
     let path = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     store::set_folder(pool, &client_id, path.as_deref()).await.map_err(store_error)?;
     notify(&app, &client_id);
-    if path.is_some() {
-        queue(app, pool.clone(), client_id, Job::Sync, None);
-    }
+    let job = if path.is_some() { Job::Sync } else { Job::Unbind };
+    queue(app, pool.clone(), client_id, job, None);
     Ok(())
 }
 

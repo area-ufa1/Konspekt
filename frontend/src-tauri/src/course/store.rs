@@ -270,6 +270,27 @@ pub async fn delete_file(pool: &SqlitePool, file_id: &str) -> Result<(), sqlx::E
     transaction.commit().await
 }
 
+/// Файлы предмета из привязанной папки (`Source::Folder`) вместе со страницами:
+/// добавленные вручную остаются. Оригиналы на диске не трогаем. Возвращает, сколько файлов убрано.
+pub async fn delete_folder_files(pool: &SqlitePool, client_id: &str) -> Result<u64, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        "DELETE FROM course_pages WHERE file_id IN          (SELECT id FROM course_files WHERE client_id = ? AND source = ?)",
+    )
+    .bind(client_id)
+    .bind(Source::Folder.as_str())
+    .execute(&mut *transaction)
+    .await?;
+    let removed = sqlx::query("DELETE FROM course_files WHERE client_id = ? AND source = ?")
+        .bind(client_id)
+        .bind(Source::Folder.as_str())
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+    transaction.commit().await?;
+    Ok(removed)
+}
+
 /// Заменяет все страницы файла в одной транзакции.
 pub async fn replace_pages(
     pool: &SqlitePool,
@@ -500,6 +521,29 @@ mod tests {
         assert_eq!(get_folder(&pool, "c1").await.unwrap().as_deref(), Some("D:\\Учёба\\Базы данных"));
         set_folder(&pool, "c1", None).await.unwrap();
         assert_eq!(get_folder(&pool, "c1").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn unbinding_removes_folder_files_with_pages_and_keeps_added_ones() {
+        let pool = pool_with_client("c1").await;
+        let mut added = sample_file("f2", "c1", "b.pdf");
+        added.source = Source::Added;
+        for file in [sample_file("f1", "c1", "a.pdf"), added, sample_file("f3", "c1", "c.pdf")] {
+            insert_file(&pool, &file).await.unwrap();
+            let page = StoredPage { number: 1, text: "текст".into(), by_claude: false, waits_claude: false };
+            replace_pages(&pool, &file.id, &[page]).await.unwrap();
+        }
+        assert_eq!(delete_folder_files(&pool, "c1").await.unwrap(), 2);
+        let left = list_files(&pool, "c1").await.unwrap();
+        assert_eq!(left.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["f2"]);
+        assert_eq!(pages(&pool, "f2").await.unwrap().len(), 1);
+        assert!(pages(&pool, "f1").await.unwrap().is_empty());
+        // Читавшийся в этот момент файл не получает страниц-сирот.
+        replace_pages(&pool, "f1", &[StoredPage { number: 1, text: "x".into(), by_claude: false, waits_claude: false }])
+            .await
+            .unwrap();
+        assert!(pages(&pool, "f1").await.unwrap().is_empty());
+        assert_eq!(delete_folder_files(&pool, "c1").await.unwrap(), 0);
     }
 
     #[tokio::test]

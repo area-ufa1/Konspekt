@@ -7,9 +7,10 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { MoreVertical } from 'lucide-react';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
 import { isAudioPath } from '@/constants/audioFormats';
 import { SUPPORTED, capState, fileBadge, fileWarning, isSupported, setCourseDropActive, tokensText } from '@/lib/course';
 import type { CourseFile, CourseOverview, FileBadge } from '@/lib/course';
@@ -35,6 +36,7 @@ export function CourseMaterialsDialog({ clientId, subject, open, onOpenChange }:
   const t = useTranslations('course');
   const [overview, setOverview] = useState<CourseOverview | null>(null);
   const [progress, setProgress] = useState<Record<string, { done: number; total: number }>>({});
+  const [unlinkAsk, setUnlinkAsk] = useState(false);
   const [viewer, setViewer] = useState<{ id: string; name: string } | null>(null);
   const tRef = useRef(t);
   tRef.current = t;
@@ -123,11 +125,30 @@ export function CourseMaterialsDialog({ clientId, subject, open, onOpenChange }:
     }
   };
 
+  const folderFiles = overview ? overview.files.filter((f) => f.source === 'folder').length : 0;
+  const unlink = async () => {
+    setUnlinkAsk(false);
+    await run('course_set_folder', { clientId, path: null });
+  };
+
   const used = overview ? overview.materialTokens + overview.summaryTokens : 0;
   const bar = overview ? capState(overview.materialTokens, overview.summaryTokens, overview.cap) : null;
 
   return (
     <>
+      <Dialog open={unlinkAsk} onOpenChange={setUnlinkAsk}>
+        <DialogContent className="max-w-md">
+          <DialogTitle>{t('unlinkTitle')}</DialogTitle>
+          <DialogDescription>
+            {folderFiles > 0 ? t('unlinkBody', { count: folderFiles }) : t('unlinkBodyNone')}
+          </DialogDescription>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUnlinkAsk(false)}>{t('unlinkCancel')}</Button>
+            <Button variant="destructive" onClick={() => void unlink()}>{t('unlinkConfirm')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 p-0">
           <div className="space-y-1.5 border-b border-[var(--af-border)] py-4 pl-5 pr-12">
@@ -146,7 +167,7 @@ export function CourseMaterialsDialog({ clientId, subject, open, onOpenChange }:
                 </button>
                 {overview.folder && (
                   <>
-                    <button type="button" onClick={() => void run('course_set_folder', { clientId, path: null })} className="text-[var(--af-accent)] hover:underline">{t('folderUnlink')}</button>
+                    <button type="button" onClick={() => setUnlinkAsk(true)} className="text-[var(--af-accent)] hover:underline">{t('folderUnlink')}</button>
                     <button type="button" onClick={() => void run('course_refresh', { clientId })} className="text-[var(--af-accent)] hover:underline">{t('refresh')}</button>
                   </>
                 )}
