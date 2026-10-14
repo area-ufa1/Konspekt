@@ -461,6 +461,13 @@ pub fn run() {
             }
             log::info!("Application setup complete");
 
+            // Промпт диалога держит материалы курса открытым текстом; после падения
+            // или убийства процесса его `Drop` не отработал — убираем до первого вызова.
+            let swept = claude_cli::remove_stale_prompt_files(&claude_cli::working_dir());
+            if swept > 0 {
+                log::info!("Removed {swept} stale Claude system prompt file(s)");
+            }
+
             // Initialize system tray
             if let Err(e) = tray::create_tray(app.handle()) {
                 log::error!("Failed to create system tray: {}", e);

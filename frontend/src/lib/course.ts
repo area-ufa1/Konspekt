@@ -94,6 +94,43 @@ export function capState(materials: number, summaries: number, cap: number) {
   };
 }
 
+export interface FileBadge {
+  key: 'stateReady' | 'stateWaits' | 'stateError' | 'stateReading' | 'stateReadingPlain';
+  values?: Record<string, string | number>;
+  tone: 'ready' | 'waits' | 'error' | 'reading';
+}
+
+/**
+ * Значок строки файла. `progress` — последнее событие `course-progress` для файла:
+ * при извлечении (`reading`) и при чтении картинок Claude (`waits-claude`, пока не всё
+ * дочитано) показывает «читается N из M».
+ */
+export function fileBadge(
+  file: Pick<CourseFile, 'state' | 'pagesWaiting' | 'error'>,
+  progress?: { done: number; total: number },
+): FileBadge {
+  const counting = progress && progress.total > 0 ? progress : null;
+  switch (file.state) {
+    case 'ready':
+      return { key: 'stateReady', tone: 'ready' };
+    case 'error':
+      return { key: 'stateError', values: { message: file.error ?? '' }, tone: 'error' };
+    case 'waits-claude':
+      return counting && counting.done < counting.total
+        ? { key: 'stateReading', values: { done: counting.done, total: counting.total }, tone: 'reading' }
+        : { key: 'stateWaits', values: { count: file.pagesWaiting }, tone: 'waits' };
+    default:
+      return counting
+        ? { key: 'stateReading', values: { done: counting.done, total: counting.total }, tone: 'reading' }
+        : { key: 'stateReadingPlain', tone: 'reading' };
+  }
+}
+
+/** Предупреждение у строки, которая не ошибка: устаревший текст после неудачного перечитывания, причина ожидания. */
+export function fileWarning(file: Pick<CourseFile, 'state' | 'error'>): string | null {
+  return file.state !== 'error' && file.error ? file.error : null;
+}
+
 export function statusLine(
   block: Pick<CourseBlock, 'subject' | 'files' | 'summaries' | 'tokens' | 'droppedFiles' | 'droppedSummaries'>,
   t: Translate,

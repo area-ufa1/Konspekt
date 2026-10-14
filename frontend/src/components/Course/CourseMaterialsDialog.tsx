@@ -11,8 +11,15 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/compone
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
 import { isAudioPath } from '@/constants/audioFormats';
-import { SUPPORTED, capState, isSupported, setCourseDropActive, tokensText } from '@/lib/course';
-import type { CourseFile, CourseOverview } from '@/lib/course';
+import { SUPPORTED, capState, fileBadge, fileWarning, isSupported, setCourseDropActive, tokensText } from '@/lib/course';
+import type { CourseFile, CourseOverview, FileBadge } from '@/lib/course';
+
+const TONE_CLASS: Record<FileBadge['tone'], string> = {
+  ready: 'text-emerald-500',
+  waits: 'text-amber-500',
+  error: 'text-red-500',
+  reading: 'text-[var(--af-accent)]',
+};
 import { CourseTextViewer } from './CourseTextViewer';
 
 const errorText = (error: unknown) => (typeof error === 'string' ? error : (error as Error)?.message ?? String(error));
@@ -207,11 +214,9 @@ function FileRow({ file, progress, onUse, onView, onReread, onRemove }: {
   const t = useTranslations('course');
   const unit = file.kind === 'pptx' ? t('slides', { count: file.pages }) : t('pages', { count: file.pages });
 
-  let badge: { text: string; cls: string };
-  if (file.state === 'ready') badge = { text: t('stateReady'), cls: 'text-emerald-500' };
-  else if (file.state === 'waits-claude') badge = { text: t('stateWaits', { count: file.pagesWaiting }), cls: 'text-amber-500' };
-  else if (file.state === 'error') badge = { text: t('stateError', { message: file.error ?? '' }), cls: 'text-red-500' };
-  else badge = { text: progress && progress.total > 0 ? t('stateReading', { done: progress.done, total: progress.total }) : t('stateReadingPlain'), cls: 'text-[var(--af-accent)]' };
+  const state = fileBadge(file, progress);
+  const badge = { text: t(state.key, state.values), cls: TONE_CLASS[state.tone] };
+  const warning = fileWarning(file);
 
   return (
     <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-[var(--af-border)] px-5 py-2.5">
@@ -225,6 +230,7 @@ function FileRow({ file, progress, onUse, onView, onReread, onRemove }: {
           {file.pagesByClaude > 0 && <span>{t('byClaude', { count: file.pagesByClaude })}</span>}
           {!file.useFlag && <span>{t('notUsed')}</span>}
         </div>
+        {warning && <div className="mt-0.5 break-words text-xs text-amber-500">{warning}</div>}
       </div>
       <span className={`whitespace-nowrap rounded-full border border-[var(--af-border)] px-2 py-0.5 text-xs ${badge.cls}`}>{badge.text}</span>
       <DropdownMenu>

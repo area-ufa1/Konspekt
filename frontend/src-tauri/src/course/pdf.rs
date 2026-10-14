@@ -27,11 +27,33 @@ pub fn library_path() -> PathBuf {
 /// Привязки PDFium глобальные (once_cell в 0.9): второй `bind_to_library` отвечает
 /// `AlreadyInitialized` — тогда достаточно лёгкой ручки `Pdfium::default()`.
 pub fn open() -> Result<Pdfium, String> {
-    match Pdfium::bind_to_library(library_path()) {
+    let library = library_path();
+    match Pdfium::bind_to_library(&library) {
         Ok(bindings) => Ok(Pdfium::new(bindings)),
         Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Ok(Pdfium::default()),
-        Err(error) => Err(format!("Не удалось загрузить PDFium: {error}")),
+        Err(error) => Err(library_failure(&error.to_string(), &library)),
     }
+}
+
+/// Причина для колонки `error` (открытая, без путей) — общая; подробность — только в лог,
+/// и путь к DLL (в нём профиль пользователя) вырезан и оттуда.
+const PDF_OPEN_FAILED: &str = "Не удалось открыть PDF";
+
+fn library_failure(detail: &str, library: &std::path::Path) -> String {
+    log::warn!("PDFium не загрузился: {}", crate::claude_cli::error_for_log(&without_paths(detail, library)));
+    PDF_OPEN_FAILED.to_string()
+}
+
+/// Подробность ошибки без пути к DLL и к её папке.
+fn without_paths(detail: &str, library: &std::path::Path) -> String {
+    let mut detail = detail.to_string();
+    for path in [Some(library), library.parent()].into_iter().flatten() {
+        let text = path.to_string_lossy();
+        if !text.is_empty() {
+            detail = detail.replace(text.as_ref(), "<pdfium>");
+        }
+    }
+    detail
 }
 
 pub fn extract(bytes: &[u8]) -> Result<Vec<PageOut>, String> {
@@ -72,6 +94,21 @@ fn render_png(page: &PdfPage) -> Result<Vec<u8>, String> {
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|error| format!("Не удалось сохранить страницу картинкой: {error}"))?;
     Ok(png)
+}
+
+#[cfg(test)]
+mod library_tests {
+    use super::*;
+
+    #[test]
+    fn a_library_failure_is_the_spec_wording_and_the_log_has_no_path() {
+        let library = PathBuf::from("C:\\Users\\Иван\\AppData\\Konspekt\\resources\\pdfium\\pdfium.dll");
+        let detail = format!("LoadLibraryExW failed for {}: module not found", library.display());
+        assert_eq!(library_failure(&detail, &library), "Не удалось открыть PDF");
+        let scrubbed = without_paths(&detail, &library);
+        assert!(!scrubbed.contains("Иван"), "{scrubbed}");
+        assert!(scrubbed.contains("module not found"));
+    }
 }
 
 #[cfg(all(test, windows))]

@@ -570,6 +570,22 @@ impl Drop for SystemPromptFile {
     }
 }
 
+/// System prompt files left by an earlier run that was killed or crashed:
+/// `Drop` never ran, and a dialog's prompt holds the course materials in
+/// plaintext. Called once at startup, before any call can create a new one.
+/// Returns how many were removed.
+pub(crate) fn remove_stale_prompt_files(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with("system-prompt-") && name.ends_with(".txt")
+        })
+        .filter(|entry| std::fs::remove_file(entry.path()).is_ok())
+        .count()
+}
+
 /// Model names come from settings and end up on a command line, which runs
 /// under cmd.exe for `.cmd` shims. Aliases (`sonnet`, `opus[1m]`) and model IDs
 /// only need these characters.
@@ -878,5 +894,20 @@ mod tests {
             file.0.clone()
         };
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn stale_system_prompt_files_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join("system-prompt-0b1c.txt");
+        std::fs::write(&stale, "материалы").unwrap();
+        let other = dir.path().join("notes.txt");
+        std::fs::write(&other, "x").unwrap();
+        std::fs::create_dir(dir.path().join("pages-1")).unwrap();
+        assert_eq!(remove_stale_prompt_files(dir.path()), 1);
+        assert!(!stale.exists());
+        assert!(other.exists());
+        assert!(dir.path().join("pages-1").exists());
+        assert_eq!(remove_stale_prompt_files(&dir.path().join("missing")), 0);
     }
 }

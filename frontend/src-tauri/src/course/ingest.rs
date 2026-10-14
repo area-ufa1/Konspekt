@@ -68,6 +68,11 @@ fn tokens_of(pages: &[StoredPage]) -> i64 {
 }
 
 /// Прочитать/перечитать файл: текст сразу, картинки — в `waits_claude`. Не зовёт Claude.
+///
+/// Строка пишется в состоянии `Reading` до извлечения, и `on_progress` сразу получает
+/// `done = total = 0` («строка есть, читается»): окно показывает файл, пока он читается.
+/// Неудачное перечитывание существующего файла оставляет его прежние страницы, токены и
+/// состояние; причина ложится в `error`.
 pub async fn ingest_file(
     pool: &SqlitePool,
     client_id: &str,
@@ -84,7 +89,7 @@ pub async fn ingest_file(
             id: uuid::Uuid::new_v4().to_string(),
             client_id: client_id.to_string(),
             name: name.clone(),
-            kind: FileKind::Txt,
+            kind: FileKind::from_name(&name).unwrap_or(FileKind::Txt),
             source: incoming.source,
             folder_path: None,
             size: 0,
@@ -101,12 +106,22 @@ pub async fn ingest_file(
         },
     };
     file.folder_path = Some(path_string(&incoming.path));
-    file.error = None;
 
-    let mut stored: Vec<StoredPage> = Vec::new();
-    match read_and_extract(&incoming.path, &name, &mut file).await {
+    // Видно в окне до извлечения (большой скан читается десятки секунд).
+    let reading = CourseFile { state: FileState::Reading, error: None, ..file.clone() };
+    if existing.is_some() {
+        store::update_file(pool, &reading).await.map_err(db_error)?;
+    } else {
+        store::insert_file(pool, &reading).await.map_err(db_error)?;
+    }
+    on_progress(Progress { client_id: client_id.to_string(), file_id: file.id.clone(), done: 0, total: 0 });
+
+    let mut extracted = file.clone();
+    let stored: Vec<StoredPage> = match read_and_extract(&incoming.path, &name, &mut extracted).await {
         Ok(pages) => {
-            stored = pages
+            file = extracted;
+            file.error = None;
+            let stored: Vec<StoredPage> = pages
                 .into_iter()
                 .map(|page| {
                     let waits = page.image_png.is_some();
@@ -121,20 +136,32 @@ pub async fn ingest_file(
             file.tokens = tokens_of(&stored);
             file.state =
                 if stored.iter().any(|page| page.waits_claude) { FileState::WaitsClaude } else { FileState::Ready };
+            store::update_file(pool, &file).await.map_err(db_error)?;
+            store::replace_pages(pool, &file.id, &stored).await.map_err(db_error)?;
+            stored
         }
         Err(reason) => {
-            file.tokens = 0;
-            file.state = FileState::Error;
-            file.error = Some(reason);
+            match existing {
+                // Прежние страницы (и прочитанное Claude) остаются: устаревший текст лучше пустого.
+                // Размер и дата — старые, так что следующий обход папки попробует снова.
+                Some(old) => {
+                    file = CourseFile { name: name.clone(), error: Some(reason), ..old.clone() };
+                    // Строка, застрявшая в `Reading` после сбоя приложения, — ошибка, а не «читается» навсегда.
+                    if file.state == FileState::Reading {
+                        file.state = FileState::Error;
+                    }
+                }
+                None => {
+                    file = extracted;
+                    file.tokens = 0;
+                    file.state = FileState::Error;
+                    file.error = Some(reason);
+                }
+            }
+            store::update_file(pool, &file).await.map_err(db_error)?;
+            Vec::new()
         }
-    }
-
-    if existing.is_some() {
-        store::update_file(pool, &file).await.map_err(db_error)?;
-    } else {
-        store::insert_file(pool, &file).await.map_err(db_error)?;
-    }
-    store::replace_pages(pool, &file.id, &stored).await.map_err(db_error)?;
+    };
     let total = stored.len() as u32;
     on_progress(Progress { client_id: client_id.to_string(), file_id: file.id.clone(), done: total, total });
     // Счётчики страниц считает запрос; возвращаем актуальную строку.
@@ -227,7 +254,7 @@ fn walk(root: &Path) -> Option<Walked> {
             }
             if file_type.is_dir() {
                 stack.push(entry.path());
-            } else if file_type.is_file() {
+            } else if file_type.is_file() && FileKind::wanted_in_folder(&entry.file_name().to_string_lossy()) {
                 found.push((entry.path(), metadata));
             }
         }
@@ -237,6 +264,15 @@ fn walk(root: &Path) -> Option<Walked> {
 
 /// Обойти папку: новые/изменённые — `ingest_file`, исчезнувшие — `delete_file`.
 pub async fn sync_folder(pool: &SqlitePool, client_id: &str) -> Result<SyncReport, String> {
+    sync_folder_with(pool, client_id, |_| {}).await
+}
+
+/// То же с ходом чтения: `on_progress` получает события `ingest_file` каждого файла.
+pub async fn sync_folder_with(
+    pool: &SqlitePool,
+    client_id: &str,
+    mut on_progress: impl FnMut(Progress),
+) -> Result<SyncReport, String> {
     let mut report = SyncReport::default();
     let Some(folder) = store::get_folder(pool, client_id).await.map_err(db_error)? else {
         return Ok(report);
@@ -259,13 +295,14 @@ pub async fn sync_folder(pool: &SqlitePool, client_id: &str) -> Result<SyncRepor
         let incoming = Incoming { path: path.clone(), source: Source::Folder };
         let existing = known.iter().find(|file| file.folder_path.as_deref() == Some(path_text.as_str()));
         let Some(existing) = existing else {
-            ingest_file(pool, client_id, &incoming, None, |_| {}).await?;
+            ingest_file(pool, client_id, &incoming, None, &mut on_progress).await?;
             report.added += 1;
             continue;
         };
         let modified = modified_rfc3339(&metadata);
-        // Строка с ошибкой или без хэша (сбой чтения, формат, размер) не «без изменений»: пробуем снова.
-        let trusted = existing.state != FileState::Error && !existing.hash.is_empty();
+        // Строка с ошибкой, без хэша (сбой чтения, формат, размер) или застрявшая в `Reading`
+        // (приложение упало посреди чтения) не «без изменений»: пробуем снова.
+        let trusted = !matches!(existing.state, FileState::Error | FileState::Reading) && !existing.hash.is_empty();
         if trusted && existing.size == metadata.len() as i64 && existing.modified == modified {
             report.unchanged += 1;
             continue;
@@ -285,7 +322,7 @@ pub async fn sync_folder(pool: &SqlitePool, client_id: &str) -> Result<SyncRepor
             store::update_file(pool, &touched).await.map_err(db_error)?;
             report.unchanged += 1;
         } else {
-            ingest_file(pool, client_id, &incoming, Some(existing), |_| {}).await?;
+            ingest_file(pool, client_id, &incoming, Some(existing), &mut on_progress).await?;
             report.changed += 1;
         }
     }
@@ -366,6 +403,15 @@ where
         Some(reason) => Err(reason),
         None => Ok(()),
     }
+}
+
+/// Оставить ждущий файл ждать с причиной (Claude не зовётся); строку с ошибкой не трогает.
+pub async fn hold_waiting(pool: &SqlitePool, file_id: &str, reason: &str) -> Result<(), String> {
+    let Some(mut file) = find_file(pool, file_id).await? else { return Ok(()) };
+    if file.state != FileState::WaitsClaude {
+        return Ok(());
+    }
+    refresh_file(pool, &mut file, Some(reason)).await
 }
 
 async fn find_file(pool: &SqlitePool, file_id: &str) -> Result<Option<CourseFile>, String> {
@@ -631,6 +677,107 @@ mod tests {
         let report = sync_folder(&pool, "c1").await.unwrap();
         assert_eq!((report.added, report.removed), (1, 0));
         assert_eq!(store::list_files(&pool, "c1").await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_reread_keeps_the_old_pages_and_state() {
+        let (pool, dir) = setup("c1").await;
+        let path = dir.path().join("секретный конспект.txt");
+        std::fs::write(&path, "Внешние ключи и каскадное удаление. ".repeat(5)).unwrap();
+        let incoming = Incoming { path: path.clone(), source: Source::Added };
+        let first = ingest_file(&pool, "c1", &incoming, None, |_| {}).await.unwrap();
+        assert_eq!(first.state, FileState::Ready);
+        store::set_page_text(&pool, &first.id, 1, "Поправлено Claude", true).await.unwrap();
+        let before = store::list_files(&pool, "c1").await.unwrap().remove(0);
+        std::fs::remove_file(&path).unwrap();
+
+        let after = ingest_file(&pool, "c1", &incoming, Some(&before), |_| {}).await.unwrap();
+        assert_eq!((after.state, after.tokens, after.pages), (before.state, before.tokens, 1));
+        assert_eq!((after.hash.as_str(), after.size), (before.hash.as_str(), before.size));
+        let reason = after.error.clone().expect("причина в error");
+        assert!(!reason.contains("секретный") && !reason.contains("конспект"), "{reason}");
+        let pages = store::pages(&pool, &after.id).await.unwrap();
+        assert_eq!((pages[0].text.as_str(), pages[0].by_claude), ("Поправлено Claude", true));
+
+        // Удачное перечитывание снимает предупреждение.
+        std::fs::write(&path, "Другой текст про представления. ".repeat(5)).unwrap();
+        let fixed = ingest_file(&pool, "c1", &incoming, Some(&after), |_| {}).await.unwrap();
+        assert_eq!((fixed.state, fixed.error), (FileState::Ready, None));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_row_is_reading_before_extraction() {
+        let (pool, dir) = setup("c1").await;
+        let path = dir.path().join("big.txt");
+        std::fs::write(&path, "Нормальные формы. ".repeat(5)).unwrap();
+        let mut seen: Vec<(u32, u32, Option<FileState>)> = Vec::new();
+        let file = ingest_file(&pool, "c1", &Incoming { path, source: Source::Added }, None, |step| {
+            // Что видит окно в момент события.
+            let state = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(store::list_files(&pool, "c1"))
+            })
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == step.file_id)
+            .map(|row| row.state);
+            seen.push((step.done, step.total, state));
+        })
+        .await
+        .unwrap();
+        assert_eq!(seen.first(), Some(&(0, 0, Some(FileState::Reading))), "{seen:?}");
+        assert_eq!(seen.last(), Some(&(1, 1, Some(FileState::Ready))), "{seen:?}");
+        assert_eq!(file.kind, FileKind::Txt);
+    }
+
+    #[tokio::test]
+    async fn a_row_left_reading_by_a_crash_is_retried_by_the_sync() {
+        let (pool, dir) = setup("c1").await;
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "Индексы. ".repeat(20)).unwrap();
+        store::set_folder(&pool, "c1", Some(dir.path().to_str().unwrap())).await.unwrap();
+        sync_folder(&pool, "c1").await.unwrap();
+        let mut stuck = store::list_files(&pool, "c1").await.unwrap().remove(0);
+        stuck.state = FileState::Reading;
+        store::update_file(&pool, &stuck).await.unwrap();
+        let report = sync_folder(&pool, "c1").await.unwrap();
+        assert_eq!((report.changed, report.unchanged), (1, 0));
+        assert_eq!(store::list_files(&pool, "c1").await.unwrap().remove(0).state, FileState::Ready);
+    }
+
+    #[tokio::test]
+    async fn the_folder_walk_takes_only_material_formats() {
+        let (pool, dir) = setup("c1").await;
+        for name in ["photo.jpg", "archive.zip", "table.xlsx", "old.doc", "slides.PPT", "notes.txt"] {
+            std::fs::write(dir.path().join(name), "Транзакции и уровни изоляции. ".repeat(5)).unwrap();
+        }
+        store::set_folder(&pool, "c1", Some(dir.path().to_str().unwrap())).await.unwrap();
+        let report = sync_folder(&pool, "c1").await.unwrap();
+        assert_eq!(report.added, 3, "txt и старые doc/ppt; jpg/zip/xlsx молча пропущены");
+        let files = store::list_files(&pool, "c1").await.unwrap();
+        let mut names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["notes.txt", "old.doc", "slides.PPT"]);
+        assert_eq!(files.iter().filter(|f| f.state == FileState::Error).count(), 2);
+        // Повторный обход не плодит и не перечитывает пропущенное.
+        let again = sync_folder(&pool, "c1").await.unwrap();
+        assert_eq!(again.added, 0);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_held_file_keeps_waiting_with_the_reason() {
+        let (pool, dir) = setup("c1").await;
+        let path = dir.path().join("Скан.pdf");
+        std::fs::write(&path, crate::course::pdf::tests::pdf_text_then_scan()).unwrap();
+        let file = ingest_file(&pool, "c1", &Incoming { path, source: Source::Added }, None, |_| {}).await.unwrap();
+        hold_waiting(&pool, &file.id, "обезличивание включено — картинки не отправляются").await.unwrap();
+        let held = store::list_files(&pool, "c1").await.unwrap().remove(0);
+        assert_eq!((held.state, held.pages_waiting), (FileState::WaitsClaude, 1));
+        assert_eq!(held.error.as_deref(), Some("обезличивание включено — картинки не отправляются"));
+        // Когда обезличивание выключено, дочитывание идёт как обычно и снимает причину.
+        read_waiting_pages(&pool, &file.id, |_| async { Ok("текст".to_string()) }, |_| {}).await.unwrap();
+        let read = store::list_files(&pool, "c1").await.unwrap().remove(0);
+        assert_eq!((read.state, read.error), (FileState::Ready, None));
     }
 
     #[tokio::test]

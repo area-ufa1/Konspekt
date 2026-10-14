@@ -48,6 +48,13 @@ impl FileKind {
         }
     }
 
+    /// Брать ли файл из папки предмета: пять форматов и старые .doc/.ppt/.xls (они станут
+    /// строками-ошибками с подсказкой); прочее (картинки, архивы, таблицы) обход молча пропускает.
+    pub fn wanted_in_folder(name: &str) -> bool {
+        let extension = name.rsplit_once('.').map(|(_, ext)| ext.to_lowercase()).unwrap_or_default();
+        matches!(extension.as_str(), "pdf" | "pptx" | "docx" | "txt" | "md" | "doc" | "ppt" | "xls")
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             FileKind::Pdf => "pdf",

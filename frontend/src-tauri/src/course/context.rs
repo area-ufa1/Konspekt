@@ -193,7 +193,8 @@ async fn load_inner(
 
     let mut docs = Vec::new();
     for file in store::list_files(pool, client_id).await? {
-        if !file.use_flag || !matches!(file.state, FileState::Ready | FileState::WaitsClaude) {
+        // `Reading` — перечитывается: прежние страницы ещё в силе (у нового файла их нет).
+        if !file.use_flag || !matches!(file.state, FileState::Ready | FileState::WaitsClaude | FileState::Reading) {
             continue;
         }
         let pages = match store::pages(pool, &file.id).await {
@@ -225,14 +226,20 @@ async fn load_lectures(
     client_id: &str,
     exclude_meeting: Option<&str>,
 ) -> Result<Vec<Lecture>, sqlx::Error> {
+    // С `exclude_meeting` — только пары раньше неё: перевыжимка старой пары не должна
+    // ссылаться «на прошлую пару» материалом, который был после.
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT m.created_at, s.result FROM meetings m \
          JOIN summary_processes s ON s.meeting_id = m.id \
-         WHERE m.client_id = ? AND m.id != ? AND s.result IS NOT NULL \
+         WHERE m.client_id = ? AND s.result IS NOT NULL \
+           AND (? IS NULL OR (m.id != ? AND m.created_at < \
+                COALESCE((SELECT created_at FROM meetings WHERE id = ?), '9999'))) \
          ORDER BY m.created_at",
     )
     .bind(client_id)
-    .bind(exclude_meeting.unwrap_or(""))
+    .bind(exclude_meeting)
+    .bind(exclude_meeting)
+    .bind(exclude_meeting)
     .fetch_all(pool)
     .await?;
     let mut lectures = Vec::new();
@@ -412,6 +419,19 @@ mod tests {
         }
         assert_eq!(load(&pool, "c2", None).await.unwrap().map(|b| (b.files, b.summaries)), Some((0, 1)));
         assert_eq!(load(&pool, "nobody", None).await.unwrap(), None);
+
+        // Перевыжимка старой пары m1: более поздняя m2 «прошлой» не считается.
+        let old = load(&pool, "c1", Some("m1")).await.unwrap().unwrap();
+        assert_eq!((old.files, old.summaries), (1, 0));
+        assert!(!old.text.contains("ТекущаяВыжимка"));
+        // Без исключения — все выжимки предмета.
+        assert_eq!(load(&pool, "c1", None).await.unwrap().unwrap().summaries, 2);
+
+        // Файл перечитывается (`Reading`): прежние страницы остаются в блоке.
+        let mut rereading = course_file("f1", "Лекция.pdf", true);
+        rereading.state = FileState::Reading;
+        store::update_file(&pool, &rereading).await.unwrap();
+        assert!(load(&pool, "c1", Some("m2")).await.unwrap().unwrap().text.contains("Первая"));
     }
 
     #[tokio::test]

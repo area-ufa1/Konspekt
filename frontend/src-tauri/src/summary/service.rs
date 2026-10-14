@@ -61,9 +61,12 @@ fn strip_title_if_present(markdown: &str) -> String {
 
 const ENGLISH_CACHE_FIELD: &str = "english_cache";
 
-/// Берут ли материалы предмета: у встроенной модели и Ollama окно мало (у встроенной — 1748 токенов).
+/// Берут ли материалы предмета: только Claude Code (claude-cli) — переключатель «В выжимке
+/// пары» виден только у него. Остальным облачным (OpenAI, Groq, OpenRouter, ключ Claude,
+/// свой адрес) 80 тыс. токенов материалов без видимого выключателя не шлём; у встроенной
+/// модели и Ollama окно и так мало.
 fn provider_takes_materials(provider: &LLMProvider) -> bool {
-    !matches!(provider, LLMProvider::BuiltInAI | LLMProvider::Ollama)
+    matches!(provider, LLMProvider::ClaudeCli)
 }
 
 /// Материалы предмета встречи — перед пользовательским контекстом выжимки.
@@ -110,11 +113,19 @@ mod course_block_tests {
     use super::*;
 
     #[test]
-    fn only_cloud_providers_take_materials() {
+    fn only_claude_code_takes_materials() {
         assert!(provider_takes_materials(&LLMProvider::ClaudeCli));
-        assert!(provider_takes_materials(&LLMProvider::Claude));
-        assert!(!provider_takes_materials(&LLMProvider::BuiltInAI));
-        assert!(!provider_takes_materials(&LLMProvider::Ollama));
+        for other in [
+            LLMProvider::Claude,
+            LLMProvider::OpenAI,
+            LLMProvider::Groq,
+            LLMProvider::OpenRouter,
+            LLMProvider::CustomOpenAI,
+            LLMProvider::BuiltInAI,
+            LLMProvider::Ollama,
+        ] {
+            assert!(!provider_takes_materials(&other), "{other:?}");
+        }
     }
 
     #[test]

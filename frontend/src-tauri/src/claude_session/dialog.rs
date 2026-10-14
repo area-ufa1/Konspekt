@@ -550,10 +550,14 @@ mod tests {
         let mut dialog = Dialog::spawn(&config(&fake)).await.unwrap();
         dialog.ask("x", |_| {}).await.unwrap();
         assert!(fake.started());
+        // Промпт (с материалами курса) лежит на диске, пока диалог жив, и уходит со штатным концом.
+        let prompt = dialog._prompt.path().to_path_buf();
+        assert!(prompt.exists());
         let started = std::time::Instant::now();
         dialog.close().await;
         assert!(started.elapsed() < Duration::from_secs(5), "close не дождался выхода");
         assert!(fake.wait_for(FakeClaude::exited, Duration::from_secs(2)).await);
+        assert!(!prompt.exists(), "файл системного промпта остался после close");
     }
 
     #[tokio::test]

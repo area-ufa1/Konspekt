@@ -1,7 +1,8 @@
 //! Материалы в записи: предмет, выбранный при старте, и блок на всю запись.
 
 use std::future::Future;
-use std::sync::Mutex;
+use std::collections::HashSet;
+use std::sync::{LazyLock, Mutex};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter, Runtime, State};
@@ -47,13 +48,10 @@ pub fn current_generation() -> u64 {
 }
 
 /// Блок для записи, собранный один раз и общий для Ассистента и подсказок.
-/// Замок держится на всю сборку (включая обход папки): второй диалог ждёт и берёт готовое.
+/// Замок держится на всю сборку: второй диалог ждёт и берёт готовое.
 pub async fn block_for_recording(pool: &sqlx::SqlitePool) -> Option<CourseBlock> {
     cached_block(|client_id| async move {
-        // Папка — до сборки, но без Claude: картинки дочитает окно материалов.
-        if let Err(error) = super::ingest::sync_folder(pool, &client_id).await {
-            log::warn!("Материалы: папка предмета не обошлась: {}", error.lines().next().unwrap_or_default());
-        }
+        sync_unless_busy(pool, &client_id).await;
         let block = context::load(pool, &client_id, None).await.unwrap_or_else(|error| {
             log::warn!("Материалы не собрались: {}", error.lines().next().unwrap_or_default());
             None
@@ -67,6 +65,21 @@ pub async fn block_for_recording(pool: &sqlx::SqlitePool) -> Option<CourseBlock>
         block
     })
     .await
+}
+
+/// Обход папки перед записью — под `WORK`, но без ожидания: если окно уже читает
+/// (обход, добавление, картинки), запись идёт с тем, что уже прочитано. Два обхода
+/// разом завели бы по строке на один новый файл. Без Claude: картинки дочитает окно.
+/// `true` — обход был.
+async fn sync_unless_busy(pool: &SqlitePool, client_id: &str) -> bool {
+    let Ok(_turn) = WORK.try_lock() else {
+        log::info!("Материалы: идёт чтение файлов — запись берёт уже прочитанное, папку не обходит");
+        return false;
+    };
+    if let Err(error) = super::ingest::sync_folder(pool, client_id).await {
+        log::warn!("Материалы: папка предмета не обошлась: {}", first_line(&error));
+    }
+    true
 }
 
 async fn cached_block<F, Fut>(build: F) -> Option<CourseBlock>
@@ -112,17 +125,28 @@ pub async fn clear_recording_block(generation: u64) {
     }
 }
 
+/// Строка о материалах в Ассистенте: только если Ассистент их берёт (`in_assistant`).
+/// Блок мог собраться ради подсказок — тогда Ассистенту хвалиться нечем.
 #[tauri::command]
-pub async fn course_live_status() -> Result<Option<CourseBlock>, String> {
-    // try_lock: пока блок собирается (обход папки может идти минуты), опрос статуса не ждёт.
-    let Ok(cached) = BLOCK.try_lock() else { return Ok(None) };
+pub async fn course_live_status(state: State<'_, crate::state::AppState>) -> Result<Option<CourseBlock>, String> {
+    let settings = store::get_settings(state.db_manager.pool()).await.unwrap_or_default();
+    if !settings.in_assistant {
+        return Ok(None);
+    }
+    Ok(live_block())
+}
+
+/// Блок текущей записи без текста, если он уже собран.
+fn live_block() -> Option<CourseBlock> {
+    // try_lock: пока блок собирается, опрос статуса не ждёт.
+    let Ok(cached) = BLOCK.try_lock() else { return None };
     let generation = current_generation();
-    Ok(match cached.as_ref() {
+    match cached.as_ref() {
         Some((cached_generation, Some(block))) if *cached_generation == generation => {
             Some(CourseBlock { text: String::new(), ..block.clone() })
         }
         _ => None,
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +156,10 @@ pub async fn course_live_status() -> Result<Option<CourseBlock>, String> {
 const ARCHIVE_LOCKED: &str = "Архив заперт — сначала откройте его";
 
 /// Запертый архив: запись отказывает (`Encode`), чтение не расшифровывает (`Decode`).
+///
+/// Любой `Decode` здесь — «Архив заперт»: у полей курса расшифровка — единственный
+/// источник `Decode`, а отличить запертый архив от испорченного значения при открытом
+/// по ошибке sqlx нельзя. Испорченная запись при открытом архиве покажет тот же отказ.
 fn store_error(error: sqlx::Error) -> String {
     if crate::database::fields::is_archive_locked(&error) || matches!(error, sqlx::Error::Decode(_)) {
         ARCHIVE_LOCKED.to_string()
@@ -188,8 +216,25 @@ pub async fn overview(pool: &SqlitePool, client_id: &str) -> Result<CourseOvervi
 
 /// Одна фоновая работа на приложение: чтение файлов и Claude идут по очереди.
 static WORK: AsyncMutex<()> = AsyncMutex::const_new(());
-/// В очереди уже стоит дочитывание из списка: ещё одно не ставим.
-static WAITING_QUEUED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Предметы, для которых дочитывание из списка уже стоит в очереди: второе не ставим.
+/// По предмету, а не одно на всех: окно предмета B не ждёт конца задачи предмета A.
+static WAITING_QUEUED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Место предмета в `WAITING_QUEUED`; освобождается в `Drop` — и когда задача
+/// упала с паникой (pdfium, разбор картинки), иначе автодочитывание встало бы до перезапуска.
+struct WaitingClaim(String);
+
+impl Drop for WaitingClaim {
+    fn drop(&mut self) {
+        WAITING_QUEUED.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.0);
+    }
+}
+
+/// `None` — дочитывание этого предмета уже в очереди.
+fn claim_waiting(client_id: &str) -> Option<WaitingClaim> {
+    let mut queued = WAITING_QUEUED.lock().unwrap_or_else(|p| p.into_inner());
+    queued.insert(client_id.to_string()).then(|| WaitingClaim(client_id.to_string()))
+}
 
 enum Job {
     Add(Vec<String>),
@@ -206,18 +251,22 @@ fn notify<R: Runtime>(app: &AppHandle<R>, client_id: &str) {
 
 fn progress<R: Runtime>(app: &AppHandle<R>) -> impl Fn(Progress) + '_ {
     move |progress| {
+        // `0 из 0` — строка только что записана как «читается»: окну пора её показать.
+        let started = progress.total == 0;
+        let client_id = progress.client_id.clone();
         let _ = app.emit("course-progress", progress);
+        if started {
+            notify(app, &client_id);
+        }
     }
 }
 
-fn queue<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, client_id: String, job: Job) {
-    let waiting = matches!(job, Job::Waiting);
+/// `claim` живёт до конца задачи (и освобождается при панике в ней).
+fn queue<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, client_id: String, job: Job, claim: Option<WaitingClaim>) {
     tauri::async_runtime::spawn(async move {
+        let _claim = claim;
         let _turn = WORK.lock().await;
         run(&app, &pool, &client_id, job).await;
-        if waiting {
-            WAITING_QUEUED.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
     });
 }
 
@@ -251,7 +300,7 @@ async fn run<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client_id: &str,
             _ => log::warn!("Материалы: файл для перечитывания не найден"),
         },
         Job::Sync => {
-            match ingest::sync_folder(pool, client_id).await {
+            match ingest::sync_folder_with(pool, client_id, progress(app)).await {
                 Ok(report) => log::info!(
                     "Материалы: папка — добавлено {}, изменено {}, убрано {}, без изменений {}",
                     report.added, report.changed, report.removed, report.unchanged
@@ -288,6 +337,14 @@ fn waiting_signature(files: &[CourseFile]) -> Vec<(String, FileState, Option<Str
         .collect()
 }
 
+const ANONYMIZATION_HOLDS_PICTURES: &str = "обезличивание включено — картинки не отправляются";
+
+/// Не слать картинки страниц: обезличивание включено и в словаре есть что скрывать.
+/// Имя на скане в картинке не спрятать, а ответ восстанавливать нечего.
+fn pictures_held(shield: crate::privacy::Shield) -> bool {
+    shield.is_some_and(|session| session.lock().unwrap_or_else(|p| p.into_inner()).has_vocabulary())
+}
+
 /// Дочитывает страницы-картинки предмета через Claude; `true`, если что-то изменилось.
 /// Отказ Claude (вход, лимит, «Только этот компьютер») останавливает чтение: файлы остаются в ожидании.
 async fn read_pictures<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client_id: &str) -> bool {
@@ -309,6 +366,16 @@ async fn read_pictures<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client
         _ => "sonnet".to_string(),
     };
     let hidden = crate::privacy::vocabulary::shield_for(pool, None).await;
+    if pictures_held(hidden.as_ref()) {
+        // Картинку не обезличить: пока обезличивание включено, страницы ждут с причиной.
+        for file in &waiting {
+            if let Err(error) = ingest::hold_waiting(pool, &file.id, ANONYMIZATION_HOLDS_PICTURES).await {
+                log::warn!("Материалы: причина ожидания не записалась: {}", first_line(&error));
+            }
+        }
+        let after = store::list_files(pool, client_id).await.map(|files| waiting_signature(&files)).unwrap_or_default();
+        return before != after;
+    }
     let (cli, model, shield) = (cli_path.as_deref(), model.as_str(), hidden.as_ref());
     let mut read = 0usize;
     for file in waiting {
@@ -323,7 +390,8 @@ async fn read_pictures<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, client
         )
         .await;
         if let Err(error) = result {
-            log::warn!("Материалы: чтение картинок остановлено: {}", first_line(&error));
+            // Первая строка ответа CLI может нести вывод модели (текст страницы): только выжимка.
+            log::warn!("Материалы: чтение картинок остановлено: {}", crate::claude_cli::error_for_log(&error));
             break;
         }
     }
@@ -340,11 +408,10 @@ pub async fn course_list<R: Runtime>(
 ) -> Result<CourseOverview, String> {
     let pool = state.db_manager.pool();
     let view = overview(pool, &client_id).await?;
-    if !crate::network_policy::local_only()
-        && view.files.iter().any(|file| file.state == FileState::WaitsClaude)
-        && !WAITING_QUEUED.swap(true, std::sync::atomic::Ordering::SeqCst)
-    {
-        queue(app, pool.clone(), client_id, Job::Waiting);
+    if !crate::network_policy::local_only() && view.files.iter().any(|file| file.state == FileState::WaitsClaude) {
+        if let Some(claim) = claim_waiting(&client_id) {
+            queue(app, pool.clone(), client_id, Job::Waiting, Some(claim));
+        }
     }
     Ok(view)
 }
@@ -358,7 +425,7 @@ pub async fn course_add_files<R: Runtime>(
 ) -> Result<(), String> {
     ensure_writable()?;
     if !paths.is_empty() {
-        queue(app, state.db_manager.pool().clone(), client_id, Job::Add(paths));
+        queue(app, state.db_manager.pool().clone(), client_id, Job::Add(paths), None);
     }
     Ok(())
 }
@@ -409,7 +476,7 @@ pub async fn course_reread<R: Runtime>(
         return Err("У файла нет пути на диске — добавьте его снова".to_string());
     }
     ensure_writable()?;
-    queue(app, pool.clone(), file.client_id, Job::Reread(file_id));
+    queue(app, pool.clone(), file.client_id, Job::Reread(file_id), None);
     Ok(())
 }
 
@@ -430,7 +497,7 @@ pub async fn course_set_folder<R: Runtime>(
     store::set_folder(pool, &client_id, path.as_deref()).await.map_err(store_error)?;
     notify(&app, &client_id);
     if path.is_some() {
-        queue(app, pool.clone(), client_id, Job::Sync);
+        queue(app, pool.clone(), client_id, Job::Sync, None);
     }
     Ok(())
 }
@@ -442,7 +509,7 @@ pub async fn course_refresh<R: Runtime>(
     client_id: String,
 ) -> Result<(), String> {
     ensure_writable()?;
-    queue(app, state.db_manager.pool().clone(), client_id, Job::Sync);
+    queue(app, state.db_manager.pool().clone(), client_id, Job::Sync, None);
     Ok(())
 }
 
@@ -530,7 +597,7 @@ mod tests {
         })
         .await;
         assert_eq!(got.unwrap().subject, "c1");
-        assert!(course_live_status().await.unwrap().is_none());
+        assert!(live_block().is_none());
         let next = cached_block(|client_id| async move { Some(block(&client_id)) }).await;
         assert_eq!(next.unwrap().subject, "c2");
         clear_recording_block(current_generation()).await;
@@ -625,5 +692,52 @@ mod tests {
         assert_eq!(reading_model("claude-cli", "opus"), "opus");
         assert_eq!(reading_model("claude-cli", " "), "sonnet");
         assert_eq!(reading_model("ollama", "llama3"), "sonnet");
+    }
+
+    #[tokio::test]
+    async fn a_recording_start_skips_the_folder_while_the_window_is_reading() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let pool = pool_with_client("c1").await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "Индексы и ключи — основа запросов. ".repeat(5)).unwrap();
+        store::set_folder(&pool, "c1", Some(dir.path().to_str().unwrap())).await.unwrap();
+        {
+            // Окно обходит ту же папку (`WORK` занят): второй обход завёл бы дубль строки.
+            let _window = WORK.lock().await;
+            assert!(!sync_unless_busy(&pool, "c1").await);
+            assert!(store::list_files(&pool, "c1").await.unwrap().is_empty());
+        }
+        assert!(sync_unless_busy(&pool, "c1").await);
+        assert_eq!(store::list_files(&pool, "c1").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn waiting_is_queued_once_per_subject_and_freed_even_on_panic() {
+        let a = claim_waiting("guard-a").expect("первое место");
+        assert!(claim_waiting("guard-a").is_none(), "второе дочитывание того же предмета не ставим");
+        let b = claim_waiting("guard-b").expect("другой предмет не ждёт первого");
+        drop(a);
+        let again = claim_waiting("guard-a").expect("после конца задачи место свободно");
+        drop((again, b));
+        // Как в `queue`: место уходит в задачу, задача падает с паникой.
+        let claim = claim_waiting("guard-p").unwrap();
+        let task = tokio::spawn(async move {
+            let _claim = claim;
+            panic!("pdfium упал");
+        });
+        assert!(task.await.is_err());
+        assert!(claim_waiting("guard-p").is_some(), "паника не заперла автодочитывание");
+    }
+
+    #[test]
+    fn pictures_wait_while_anonymization_has_something_to_hide() {
+        use crate::privacy::anonymize::{Session, Vocabulary};
+        assert!(!pictures_held(None), "обезличивание выключено");
+        let empty = Mutex::new(Session::new(Vocabulary::default()));
+        assert!(!pictures_held(Some(&empty)), "скрывать нечего");
+        let names = Mutex::new(Session::new(Vocabulary { names: vec!["Иванов".into()], terms: Vec::new() }));
+        assert!(pictures_held(Some(&names)));
+        let terms = Mutex::new(Session::new(Vocabulary { names: Vec::new(), terms: vec!["Простоквашино".into()] }));
+        assert!(pictures_held(Some(&terms)));
     }
 }
